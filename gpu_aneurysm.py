@@ -1134,7 +1134,7 @@ def nii_img_replace(data, new_img):
 
 #"主程式"
 #model_predict_aneurysm(path_code, path_process, case_name, path_log, gpu_n)
-def model_predict_aneurysm(path_code, path_process, case_name, path_log, gpu_n):
+def model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name, path_log, gpu_n):
     path_model = os.path.join(path_code, 'model_weights')
 
     #以log紀錄資訊，先建置log
@@ -1268,7 +1268,7 @@ def model_predict_aneurysm(path_code, path_process, case_name, path_log, gpu_n):
             predict_from_raw_data(path_normimg,
                                   path_vessel,
                                   path_process,
-                                  '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres',
+                                  path_nnunet_model,
                                   (13,),
                                   0.25,
                                   use_gaussian=True,
@@ -1361,6 +1361,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--path_code', type=str, help='目前執行的code')
     parser.add_argument('--path_process', type=str, help='目前執行的資料夾')
+    parser.add_argument('--path_nnunet_model', type=str, help='nnU-Net model路徑')
     parser.add_argument('--case', type=str, help='目前執行的case的ID')
     parser.add_argument('--path_log', type=str, help='log資料夾')
     parser.add_argument('--gpu_n', type=int, help='第幾顆gpu')
@@ -1368,8 +1369,9 @@ if __name__ == '__main__':
 
     path_code = str(args.path_code)
     path_process = str(args.path_process)
+    path_nnunet_model = str(args.path_nnunet_model)
     case_name = str(args.case)
     path_log = str(args.path_log)
     gpu_n = args.gpu_n
 
-    model_predict_aneurysm(path_code, path_process, case_name, path_log, gpu_n)
+    model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name, path_log, gpu_n)

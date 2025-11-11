@@ -87,6 +87,7 @@ def pipeline_aneurysm(ID,
                       MRA_BRAIN_file,  
                       path_output,
                       path_code = '/mnt/e/pipeline/chuan/code/', 
+                      path_nnunet_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres',
                       path_processModel = '/mnt/e/pipeline/chuan/process/Deep_Aneurysm/', 
                       path_outdcm = '',
                       path_json = '/mnt/e/pipeline/chuan/json/',
@@ -534,6 +535,7 @@ if __name__ == '__main__':
     #下面設定各個路徑
     path_code = '/data/4TB1/pipeline/chuan/code/'
     path_process = '/data/4TB1/pipeline/chuan/process/'  #前處理dicom路徑(test case)
+    path_nnunet_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres'
     path_processModel = os.path.join(path_process, 'Deep_Aneurysm')  #前處理dicom路徑(test case)
     #path_processID = os.path.join(path_processModel, ID)  #前處理dicom路徑(test case)
 
@@ -552,7 +554,7 @@ if __name__ == '__main__':
     os.makedirs(path_output,exist_ok=True)
 
     #直接當作function的輸入，因為可能會切換成nnUNet的版本，所以自訂化模型移到跟model一起，synthseg自己做，不用統一
-    pipeline_aneurysm(ID, MRA_BRAIN_file, path_output, path_code, path_processModel, path_DcmDir, path_json, path_log, gpu_n)
+    pipeline_aneurysm(ID, MRA_BRAIN_file, path_output, path_code, path_nnunet_model, path_processModel, path_DcmDir, path_json, path_log, gpu_n)
     
 
     # #最後再讀取json檔結果
