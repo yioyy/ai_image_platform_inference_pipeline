@@ -5,13 +5,13 @@
 # History:
 # 2021/09/23 3rd
 # 初始化 conda 指令
-source /home/david/miniconda3/etc/profile.d/conda.sh
+source /home/tmu/miniconda3/etc/profile.d/conda.sh
 
 # 啟動環境
 conda activate tf_2_14
 
 # 執行你的 python 程式，並傳入參數
-python /home/david/pipeline/chuan/code/pipeline_aneurysm_tensorflow.py --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4"
+python /data/4TB1/pipeline/chuan/code/pipeline_aneurysm_tensorflow.py --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4"
 
 # 停用環境
 conda deactivate 
