@@ -1306,7 +1306,7 @@ def model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name
         
             spacing_nn = [pixdim[1], pixdim[2]]
         
-            pred_prob_map, df_pred, new_pred_label = filter_aneurysm(prob, spacing_nn, conf_th=0.1, min_diameter=2, top_k=4, obj_th=0.67)
+            pred_prob_map, df_pred, new_pred_label = filter_aneurysm(prob, spacing_nn, conf_th=0.1, min_diameter=2, top_k=4, obj_th=0.65)
         
             #最後存出新mask，存出nifti
             new_pred_label = data_translate_back(new_pred_label, prob_nii).astype(int)
