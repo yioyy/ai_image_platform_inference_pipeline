@@ -1,0 +1,3 @@
+# 客製化檔案：合併時保留當前版本
+pipeline_aneurysm.sh merge=ours
+pipeline_aneurysm_tensorflow.py merge=ours
