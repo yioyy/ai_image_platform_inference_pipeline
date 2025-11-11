@@ -172,6 +172,7 @@ def pipeline_aneurysm(ID,
                    "python", "/data/4TB1/pipeline/chuan/code/gpu_aneurysm.py",
                    "--path_code", path_code,
                    "--path_process", path_processID,
+                   "--path_nnunet_model", path_nnunet_model,
                    "--case", ID,
                    "--path_log", path_log,
                    "--gpu_n", str(gpu_n)  # 注意要轉成字串
