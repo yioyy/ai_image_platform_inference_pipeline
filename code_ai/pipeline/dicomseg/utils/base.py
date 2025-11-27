@@ -88,8 +88,11 @@ def get_dicom_seg_template(model: str, label_dict: Dict) -> Dict:
     # Create segment attributes for each label
     for idx in unique_labels:
         name = label_dict[idx]["SegmentLabel"]
+        color_value = label_dict[idx].get("color", "red")
+        if not isinstance(color_value, str):
+            color_value = "red"
         # Convert color to RGB values (0-255)
-        rgb_rate = mcolors.to_rgb(label_dict[idx]["color"])
+        rgb_rate = mcolors.to_rgb(color_value)
         rgb = [int(y * 255) for y in rgb_rate]
 
         # Create segment attribute dictionary

@@ -1,15 +1,15 @@
 {
-    "dataset_name": "Dataset121_DeepAneurysm",
+    "dataset_name": "Dataset015_DeepLacune",
     "plans_name": "nnUNetPlans",
     "original_median_spacing_after_transp": [
-        0.6999989748001099,
+        7.0,
         0.44920000433921814,
         0.44920000433921814
     ],
     "original_median_shape_after_transp": [
-        85,
-        236,
-        286
+        21,
+        358,
+        307
     ],
     "image_reader_writer": "SimpleITKIO",
     "transpose_forward": [
@@ -26,26 +26,26 @@
         "2d": {
             "data_identifier": "nnUNetPlans_2d",
             "preprocessor_name": "DefaultPreprocessor",
-            "batch_size": 14,
+            "batch_size": 26,
             "patch_size": [
                 384,
-                384
+                320
             ],
             "median_image_size_in_voxels": [
-                434.0,
-                402.0
+                361.0,
+                308.0
             ],
             "spacing": [
                 0.44920000433921814,
                 0.44920000433921814
             ],
             "normalization_schemes": [
-                "NoNormalization"
+                "ZScoreBrainNormalization"
             ],
             "use_mask_for_norm": [
                 false
             ],
-            "UNet_class_name": "ResidualEncoderUNet",
+            "UNet_class_name": "PlainConvUNet",
             "UNet_base_num_features": 32,
             "n_conv_per_stage_encoder": [
                 2,
@@ -152,34 +152,35 @@
             },
             "batch_dice": true
         },
-        "3d_lowres": {
-            "data_identifier": "nnUNetPlans_3d_lowres",
+        "3d_fullres": {
+            "data_identifier": "nnUNetPlans_3d_fullres",
             "preprocessor_name": "DefaultPreprocessor",
             "batch_size": 2,
             "patch_size": [
-                48,
-                192,
-                160
+                20,
+                320,
+                256
             ],
             "median_image_size_in_voxels": [
-                81,
-                279,
-                258
+                21.0,
+                361.0,
+                308.0
             ],
             "spacing": [
-                1.0905768015997388,
-                0.6998389702974243,
-                0.6998389702974243
+                7.0,
+                0.44920000433921814,
+                0.44920000433921814
             ],
             "normalization_schemes": [
-                "NoNormalization"
+                "ZScoreBrainNormalization"
             ],
             "use_mask_for_norm": [
                 false
             ],
-            "UNet_class_name": "ResidualEncoderUNet",
+            "UNet_class_name": "PlainConvUNet",
             "UNet_base_num_features": 32,
             "n_conv_per_stage_encoder": [
+                2,
                 2,
                 2,
                 2,
@@ -192,12 +193,13 @@
                 2,
                 2,
                 2,
+                2,
                 2
             ],
             "num_pool_per_axis": [
-                3,
-                5,
-                5
+                2,
+                6,
+                6
             ],
             "pool_op_kernel_sizes": [
                 [
@@ -206,22 +208,27 @@
                     1
                 ],
                 [
-                    2,
-                    2,
-                    2
-                ],
-                [
-                    2,
-                    2,
-                    2
-                ],
-                [
-                    2,
+                    1,
                     2,
                     2
                 ],
                 [
                     1,
+                    2,
+                    2
+                ],
+                [
+                    1,
+                    2,
+                    2
+                ],
+                [
+                    2,
+                    2,
+                    2
+                ],
+                [
+                    2,
                     2,
                     2
                 ],
@@ -233,12 +240,17 @@
             ],
             "conv_kernel_sizes": [
                 [
-                    3,
+                    1,
                     3,
                     3
                 ],
                 [
+                    1,
                     3,
+                    3
+                ],
+                [
+                    1,
                     3,
                     3
                 ],
@@ -285,148 +297,20 @@
                 "order_z": 0,
                 "force_separate_z": null
             },
-            "batch_dice": false,
-            "next_stage": "3d_cascade_fullres"
-        },
-        "3d_fullres": {
-            "data_identifier": "nnUNetPlans_3d_fullres",
-            "preprocessor_name": "DefaultPreprocessor",
-            "batch_size": 900,
-            "patch_size": [
-                32,
-                64,
-                64
-            ],
-            "median_image_size_in_voxels": [
-                32.0,
-                64.0,
-                64.0
-            ],
-            "spacing": [
-                0.6999997496604919,
-                0.44920000433921814,
-                0.44920000433921814
-            ],
-            "normalization_schemes": [
-                "NoNormalization"
-            ],
-            "use_mask_for_norm": [
-                false
-            ],
-            "UNet_class_name": "ResidualEncoderUNetClassifier",
-            "UNet_base_num_features": 32,
-            "n_conv_per_stage_encoder": [
-                2,
-                2,
-                2,
-                2,
-                2
-            ],
-            "n_conv_per_stage_decoder": [
-                2,
-                2,
-                2,
-                2
-            ],
-            "num_pool_per_axis": [
-                3,
-                4,
-                4
-            ],
-            "pool_op_kernel_sizes": [
-                [
-                    1,
-                    1,
-                    1
-                ],
-                [
-                    1,
-                    2,
-                    2
-                ],
-                [
-                    2,
-                    2,
-                    2
-                ],
-                [
-                    2,
-                    2,
-                    2
-                ],
-                [
-                    2,
-                    2,
-                    2
-                ]
-            ],
-            "conv_kernel_sizes": [
-                [   
-                    1,
-                    3,
-                    3
-                ],
-                [
-                    3,
-                    3,
-                    3
-                ],
-                [
-                    3,
-                    3,
-                    3
-                ],
-                [
-                    3,
-                    3,
-                    3
-                ],
-                [
-                    3,
-                    3,
-                    3
-                ]
-            ],
-            "unet_max_num_features": 512,
-            "resampling_fn_data": "resample_data_or_seg_to_shape",
-            "resampling_fn_seg": "resample_data_or_seg_to_shape",
-            "resampling_fn_data_kwargs": {
-                "is_seg": false,
-                "order": 3,
-                "order_z": 0,
-                "force_separate_z": null
-            },
-            "resampling_fn_seg_kwargs": {
-                "is_seg": true,
-                "order": 1,
-                "order_z": 0,
-                "force_separate_z": null
-            },
-            "resampling_fn_probabilities": "resample_data_or_seg_to_shape",
-            "resampling_fn_probabilities_kwargs": {
-                "is_seg": false,
-                "order": 1,
-                "order_z": 0,
-                "force_separate_z": null
-            },
             "batch_dice": false
-        },
-        "3d_cascade_fullres": {
-            "inherits_from": "3d_fullres",
-            "previous_stage": "3d_lowres"
         }
     },
     "experiment_planner_used": "ExperimentPlanner",
     "label_manager": "LabelManager",
     "foreground_intensity_properties_per_channel": {
         "0": {
-            "max": 3.198979616165161,
-            "mean": 0.7366887643438168,
-            "median": 0.6796993017196655,
-            "min": -0.02173912525177002,
-            "percentile_00_5": 0.10982628911733627,
-            "percentile_99_5": 1.914076566696167,
-            "std": 0.36197441199421027
+            "max": 2679.0,
+            "mean": 1094.3029018958514,
+            "median": 1072.0,
+            "min": 1.0,
+            "percentile_00_5": 266.0,
+            "percentile_99_5": 1868.0,
+            "std": 275.548242230399
         }
     }
 }

@@ -1136,9 +1136,6 @@ class AneurysmPipeline:
 
         for idx, (PID, Sdate, AN, PA) in enumerate(zip(PIDs, Sdates, ANs, PAs)):
             print(f"[{idx}] {PA} Start...")
-            if PA == '00657109_20210413_MR_21004130157':
-                # 特殊排除案例
-                continue
 
             label_nii = nib.load(os.path.join(self.path_nii, 'Pred.nii.gz'))
             label = np.array(label_nii.dataobj)
@@ -1814,3 +1811,49 @@ def organize_data(list_a, list_b):
         })
     
     return dict(data_dict)
+
+#將SynthSEG的結果轉到original上
+def resampleSynthSEG2original(path_nii, series, SynthSEGmodel):
+    #先讀取原始影像並抓出SpacingBetweenSlices跟PixelSpacing
+    img_nii = nib.load(os.path.join(path_nii, series + '.nii.gz'))
+    img_array = np.array(img_nii.dataobj)
+    img_array = data_translate(img_array, img_nii)
+    img_1mm_nii = nib.load(os.path.join(path_nii, series + '_resample.nii.gz'))
+    img_1mm_array = np.array(img_1mm_nii.dataobj)    
+    SynthSEG_1mm_nii = nib.load(os.path.join(path_nii, series + '_' + SynthSEGmodel + '.nii.gz')) #230*230*140
+
+    y_i, x_i, z_i = img_array.shape
+    y_i1, x_i1, z_i1 = img_1mm_array.shape
+    
+    header_img = img_nii.header.copy() #抓出nii header 去算體積 
+    pixdim_img = header_img['pixdim']  #可以借此從nii的header抓出voxel size
+    header_img_1mm = img_1mm_nii.header.copy() #抓出nii header 去算體積 
+    pixdim_img_1mm = header_img_1mm['pixdim']  #可以借此從nii的header抓出voxel size    
+    
+    #先把影像從230*230*140轉成256*256*140
+    img_1mm_256_nii = nibabel.processing.conform(img_1mm_nii, ((y_i, x_i, z_i1)),(pixdim_img[1], pixdim_img[2], pixdim_img_1mm[3]),order = 3) #影像用
+    img_1mm_256 = np.array(img_1mm_256_nii.dataobj)
+    img_1mm_256 = data_translate(img_1mm_256, img_1mm_256_nii)
+    img_1mm_256_back = data_translate_back(img_1mm_256, img_1mm_256_nii)
+    img_1mm_256_nii2 = nii_img_replace(img_1mm_256_nii, img_1mm_256_back)
+    nib.save(img_1mm_256_nii2, os.path.join(path_nii, series + '_resample_256.nii.gz'))
+    #再將SynthSEG從230*230*140轉成256*256*140
+    SynthSEG_1mm_256_nii = nibabel.processing.conform(SynthSEG_1mm_nii, ((y_i, x_i, z_i1)),(pixdim_img[1], pixdim_img[2], pixdim_img_1mm[3]),order = 0) #影像用
+    SynthSEG_1mm_256 = np.array(SynthSEG_1mm_256_nii.dataobj)
+    SynthSEG_1mm_256 = data_translate(SynthSEG_1mm_256, SynthSEG_1mm_256_nii)
+    SynthSEG_1mm_256_back = data_translate_back(SynthSEG_1mm_256, SynthSEG_1mm_256_nii)
+    SynthSEG_1mm_256_nii2 = nii_img_replace(SynthSEG_1mm_256_nii, SynthSEG_1mm_256_back)
+    nib.save(SynthSEG_1mm_256_nii2, os.path.join(path_nii, series + '_' + SynthSEGmodel + '_256.nii.gz'))   
+
+    #以下將1mm重新組回otiginal    
+    new_array = np.zeros(img_array.shape)
+    img_repeat = np.expand_dims(img_array, -1).repeat(z_i1, axis=-1)
+    img_1mm_repeat = np.expand_dims(img_1mm_256, 2).repeat(z_i, axis=2)
+    diff = np.sum(np.abs(img_1mm_repeat - img_repeat), axis = (0,1))
+    argmin = np.argmin(diff, axis=1)
+    new_array = SynthSEG_1mm_256[:,:,argmin]
+    #最後重新組回nifti
+    new_array_save = data_translate_back(new_array, img_nii)
+    new_SynthSeg_nii = nii_img_replace(img_nii, new_array_save)
+    nib.save(new_SynthSeg_nii, os.path.join(path_nii, 'NEW_' + series + '_' + SynthSEGmodel + '.nii.gz'))   
+    return new_array
