@@ -1,31 +1,30 @@
-# 腦動脈瘤 AI 預測分析系統
+# 腦部影像 AI 分析系統
 
 ## 專案簡介
 
-本系統是一個完整的腦動脈瘤（Aneurysm）AI 預測分析流程，使用深度學習模型對腦部 MRA (Magnetic Resonance Angiography) 影像進行自動化分析，包含動脈瘤檢測、血管分割、影像重建、數據統計等功能。
+本系統是一個完整的腦部影像 AI 分析平台，整合三大臨床應用：**腦動脈瘤檢測**、**急性腦梗塞分析**、**白質病變評估**。使用深度學習模型對腦部 MRI/MRA 影像進行自動化分析，提供臨床決策支援。
 
-### 主要功能
+### 三大核心功能模組
 
-- **動脈瘤檢測**: 使用 nnU-Net 深度學習模型自動檢測腦動脈瘤
-- **血管分割**: 對腦血管進行 16 區域分割標記
-- **MIP 影像生成**: 自動生成 Maximum Intensity Projection (MIP) 影像
-- **量化分析**: 計算動脈瘤大小、位置、體積等臨床參數
-- **DICOM-SEG 生成**: 產生標準 DICOM 分割格式
-- **結果上傳**: 自動上傳至 Orthanc PACS 和 AI 平台
+#### 1. 腦動脈瘤檢測 (Aneurysm Detection)
+- **適用影像**: MRA (Magnetic Resonance Angiography)
+- **主要功能**: 動脈瘤自動檢測、血管分割、MIP 影像生成
+- **模型架構**: nnU-Net 3D Full Resolution
+- **輸出**: 動脈瘤位置、大小、體積、所在血管區域
 
-## 系統架構
+#### 2. 急性腦梗塞分析 (Acute Infarct Detection)
+- **適用影像**: DWI (Diffusion Weighted Imaging), ADC
+- **主要功能**: 急性梗塞自動偵測、體積量測、腦區定位
+- **模型架構**: nnU-Net 2D
+- **輸出**: 梗塞範圍、體積、受影響腦區、ASPECTS 評分
 
-```
-pipeline_aneurysm.sh (Shell 腳本)
-    ↓ 啟動 Conda 環境
-pipeline_aneurysm_tensorflow.py (主程式)
-    ↓ 呼叫
-gpu_aneurysm.py (GPU 推論模組)
-    ↓ 使用
-nnU-Net Model + TensorFlow Models
-    ↓ 產生
-預測結果 + DICOM-SEG + JSON + Excel 報告
-```
+#### 3. 白質病變評估 (White Matter Hyperintensity)
+- **適用影像**: T2-FLAIR
+- **主要功能**: 白質病變自動分割、Fazekas 分級、體積量測
+- **模型架構**: nnU-Net 2D
+- **輸出**: WMH 體積、Fazekas 評分、分佈位置
+
+---
 
 ## 系統需求
 
@@ -35,25 +34,33 @@ nnU-Net Model + TensorFlow Models
 - **儲存空間**: 每個案例約需 2-5GB 暫存空間
 
 ### 軟體需求
-- **作業系統**: Linux (Ubuntu 18.04+)
-- **Python**: 3.9+
+- **作業系統**: Linux (Ubuntu 20.04+)
+- **Python**: 3.9-3.11 (推薦 3.10)
 - **Conda/Miniconda**: 用於環境管理
-- **CUDA**: 11.x 以上
+- **CUDA**: 12.4
+- **cuDNN**: 對應 CUDA 12.4 的版本
 - **GDCM**: 用於 DICOM 影像處理
 
 ### Python 套件依賴
-```
-tensorflow >= 2.14
-numpy < 2.0  # 注意版本限制
-nibabel
-pydicom
-scikit-image
-opencv-python
-pandas
-matplotlib
-pynvml
-SimpleITK
-```
+
+| 套件 | 版本 | 用途 |
+|------|------|------|
+| PyTorch | 2.6.0 | nnU-Net 深度學習框架 (CUDA 12.4) |
+| TensorFlow | 2.14.0 | 血管分割與 SynthSeg 模型 |
+| NumPy | 1.26.4 | 數值計算 |
+| nibabel | 5.2.1 | NIfTI 影像處理 |
+| SimpleITK | 2.3.1 | 醫學影像處理 |
+| scikit-image | 0.22.0 | 影像處理與形態學操作 |
+| pydicom | latest | DICOM 影像處理 |
+| opencv-python | latest | 影像處理 |
+| pandas | latest | 資料處理 |
+| matplotlib | latest | 視覺化 |
+| pynvml | latest | GPU 記憶體監控 |
+| brainextractor | latest | 腦部組織提取 (BET) |
+
+**注意**: NumPy 版本限制為 < 2.0，因為 DICOM 壓縮功能尚未相容 NumPy 2.x
+
+---
 
 ## 安裝說明
 
@@ -63,8 +70,8 @@ SimpleITK
 # 初始化 conda
 source /home/tmu/miniconda3/etc/profile.d/conda.sh
 
-# 建立環境
-conda create -n tf_2_14 python=3.9
+# 建立環境 (Python 3.10)
+conda create -n tf_2_14 python=3.10
 
 # 啟動環境
 conda activate tf_2_14
@@ -73,10 +80,23 @@ conda activate tf_2_14
 ### 2. 安裝 Python 套件
 
 ```bash
+# 步驟 1: 安裝 PyTorch (CUDA 12.4)
+pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+
+# 步驟 2: 安裝 TensorFlow
 pip install tensorflow==2.14.0
-pip install nibabel pydicom scikit-image opencv-python
-pip install pandas matplotlib pynvml SimpleITK
+
+# 步驟 3: 安裝醫學影像處理套件
+pip install numpy==1.26.4
+pip install nibabel==5.2.1
+pip install SimpleITK==2.3.1
+pip install scikit-image==0.22.0
+pip install pydicom opencv-python pandas matplotlib pynvml
 pip install pylibjpeg pylibjpeg-libjpeg pylibjpeg-openjpeg
+
+# 步驟 4: 安裝 BET 腦部提取工具
+pip install brainextractor
+# 或安裝 FSL: sudo apt-get install fsl
 ```
 
 ### 3. 安裝 GDCM
@@ -92,13 +112,27 @@ sudo apt-get install libgdcm-tools
 ### 4. 準備模型權重
 
 確保以下模型權重已下載至正確路徑：
-- nnU-Net 模型: `/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/`
-- TensorFlow 模型: `/data/4TB1/pipeline/chuan/code/model_weights/`
+```bash
+# 動脈瘤模型
+/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/
+
+# 急性梗塞模型
+/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset040_DeepInfarct/
+
+# 白質病變模型
+/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset015_DeepLacune/
+
+# SynthSeg 腦區分割模型
+/data/4TB1/pipeline/chuan/code/model_weights/SynthSeg_parcellation_tf28/
+```
+
+---
 
 ## 使用方法
 
-### 方式一：使用 Shell 腳本（推薦）
+### 模組 1: 腦動脈瘤檢測
 
+#### 使用 Shell 腳本（推薦）
 ```bash
 bash pipeline_aneurysm.sh \
     "<Patient_ID>" \
@@ -116,46 +150,139 @@ bash pipeline_aneurysm.sh \
     "/data/output/"
 ```
 
-### 方式二：直接執行 Python 程式
-
+#### 直接執行 Python
 ```bash
-# 啟動環境
 conda activate tf_2_14
 
-# 執行程式
 python pipeline_aneurysm_tensorflow.py \
     --ID "17390820_20250604_MR_21406040004" \
     --Inputs "/data/input/MRA_BRAIN.nii.gz" \
     --DicomDir "/data/inputDicom/MRA_BRAIN/" \
     --Output_folder "/data/output/"
 
-# 停用環境
 conda deactivate
 ```
 
+---
+
+### 模組 2: 急性腦梗塞分析
+
+#### 使用 Shell 腳本（推薦）
+```bash
+bash pipeline_infarct.sh \
+    "<Patient_ID>" \
+    "<ADC_NII_Path>" \
+    "<DWI0_NII_Path>" \
+    "<DWI1000_NII_Path>" \
+    "[SynthSEG_NII_Path]" \
+    "<ADC_DICOM_Dir>" \
+    "<DWI0_DICOM_Dir>" \
+    "<DWI1000_DICOM_Dir>" \
+    "<Output_Folder>"
+```
+
+#### 範例
+```bash
+bash pipeline_infarct.sh \
+    "01550089_20251117_MR_21411150023" \
+    "/data/input/01550089_20251117_MR_21411150023/ADC.nii.gz" \
+    "/data/input/01550089_20251117_MR_21411150023/DWI0.nii.gz" \
+    "/data/input/01550089_20251117_MR_21411150023/DWI1000.nii.gz" \
+    "" \
+    "/data/inputDicom/01550089_20251117_MR_21411150023/ADC/" \
+    "/data/inputDicom/01550089_20251117_MR_21411150023/DWI0/" \
+    "/data/inputDicom/01550089_20251117_MR_21411150023/DWI1000/" \
+    "/data/output/"
+```
+
+**註**: 如果未提供 SynthSEG，系統會自動執行 SynthSEG 腦區分割（增加約 60-90 秒處理時間）
+
+#### 直接執行 Python
+```bash
+conda activate tf_2_14
+
+python pipeline_infarct_torch.py \
+    --ID "01550089_20251117_MR_21411150023" \
+    --Inputs "/data/input/ADC.nii.gz" "/data/input/DWI0.nii.gz" "/data/input/DWI1000.nii.gz" \
+    --DicomDir "/data/inputDicom/ADC/" "/data/inputDicom/DWI0/" "/data/inputDicom/DWI1000/" \
+    --Output_folder "/data/output/"
+
+conda deactivate
+```
+
+---
+
+### 模組 3: 白質病變評估
+
+#### 使用 Shell 腳本（推薦）
+```bash
+bash pipeline_wmh.sh \
+    "<Patient_ID>" \
+    "<T2FLAIR_NII_Path>" \
+    "[SynthSEG_NII_Path]" \
+    "<T2FLAIR_DICOM_Dir>" \
+    "<Output_Folder>"
+```
+
+#### 範例
+```bash
+bash pipeline_wmh.sh \
+    "01550089_20251117_MR_21411150023" \
+    "/data/input/01550089_20251117_MR_21411150023/T2FLAIR_AXI.nii.gz" \
+    "" \
+    "/data/inputDicom/01550089_20251117_MR_21411150023/T2FLAIR_AXI/" \
+    "/data/output/"
+```
+
+#### 直接執行 Python
+```bash
+conda activate tf_2_14
+
+python pipeline_wmh_torch.py \
+    --ID "01550089_20251117_MR_21411150023" \
+    --Inputs "/data/input/T2FLAIR_AXI.nii.gz" \
+    --DicomDir "/data/inputDicom/T2FLAIR_AXI/" \
+    --Output_folder "/data/output/"
+
+conda deactivate
+```
+
+---
+
 ## 參數說明
 
-### Shell 腳本參數 (pipeline_aneurysm.sh)
+### 模組 1: 動脈瘤檢測參數
 
-| 位置 | 參數名稱 | 說明 | 範例 |
-|------|---------|------|------|
-| $1 | Patient_ID | 病患 ID 或研究 ID | `17390820_20250604_MR_21406040004` |
-| $2 | MRA_Input | MRA 腦部影像 NIfTI 路徑 | `/data/input/MRA_BRAIN.nii.gz` |
-| $3 | DICOM_Dir | 原始 DICOM 影像目錄 | `/data/inputDicom/MRA_BRAIN/` |
-| $4 | Output_Dir | 輸出結果資料夾 | `/data/output/` |
+| 參數 | 類型 | 說明 | 範例 |
+|------|------|------|------|
+| `--ID` | str | 病患識別碼 | `17390820_20250604_MR_21406040004` |
+| `--Inputs` | str | MRA 影像路徑 | `/data/input/MRA_BRAIN.nii.gz` |
+| `--DicomDir` | str | DICOM 目錄 | `/data/inputDicom/MRA_BRAIN/` |
+| `--Output_folder` | str | 輸出資料夾 | `/data/output/` |
 
-### Python 程式參數
+### 模組 2: 梗塞分析參數
 
-| 參數 | 類型 | 預設值 | 說明 |
-|------|------|--------|------|
-| `--ID` | str | 必填 | 病患識別碼 |
-| `--Inputs` | list[str] | 必填 | 輸入 NIfTI 檔案路徑列表 |
-| `--DicomDir` | list[str] | 必填 | DICOM 影像目錄列表 |
-| `--Output_folder` | str | 必填 | 輸出資料夾路徑 |
+| 參數 | 類型 | 說明 | 範例 |
+|------|------|------|------|
+| `--ID` | str | 病患識別碼 | `01550089_20251117_MR_21411150023` |
+| `--Inputs` | list[str] | ADC, DWI0, DWI1000 路徑列表 | 見範例 |
+| `--DicomDir` | list[str] | DICOM 目錄列表 | 見範例 |
+| `--Output_folder` | str | 輸出資料夾 | `/data/output/` |
+
+### 模組 3: WMH 評估參數
+
+| 參數 | 類型 | 說明 | 範例 |
+|------|------|------|------|
+| `--ID` | str | 病患識別碼 | `01550089_20251117_MR_21411150023` |
+| `--Inputs` | list[str] | T2FLAIR 路徑 (可選 SynthSEG) | `/data/input/T2FLAIR.nii.gz` |
+| `--DicomDir` | list[str] | DICOM 目錄 | `/data/inputDicom/T2FLAIR/` |
+| `--Output_folder` | str | 輸出資料夾 | `/data/output/` |
+
+---
 
 ## 輸出說明
 
-### 輸出檔案結構
+### 模組 1: 動脈瘤輸出檔案
 
 ```
 <Output_Folder>/
@@ -167,125 +294,172 @@ conda deactivate
 └── Pred_Aneurysm_platform_json.json  # 平台格式 JSON
 ```
 
-### 暫存處理目錄
-
-在處理過程中，會在以下路徑產生暫存檔案：
+### 模組 2: 梗塞輸出檔案
 
 ```
-/data/4TB1/pipeline/chuan/process/Deep_Aneurysm/<Patient_ID>/
-├── MRA_BRAIN.nii.gz           # 輸入影像副本
-├── Vessel.nii.gz              # 血管分割結果
-├── Vessel_16.nii.gz           # 16 區域血管分割
-├── nnUNet/                    # nnU-Net 模型結果
-│   ├── Pred.nii.gz            # 預測遮罩
-│   ├── Prob.nii.gz            # 機率圖
-│   ├── Dicom/                 # DICOM 輸出
-│   │   ├── MRA_BRAIN/         # MRA 影像
-│   │   ├── MIP_Pitch/         # Pitch MIP
-│   │   ├── MIP_Yaw/           # Yaw MIP
-│   │   └── Dicom-Seg/         # DICOM-SEG 分割
-│   ├── Image_nii/             # NIfTI 影像
-│   ├── Image_reslice/         # 重切影像
-│   ├── excel/                 # Excel 分析報告
-│   │   └── <ID>_measurements.xlsx
-│   ├── JSON/                  # JSON 結果
-│   │   └── <ID>_platform_json.json
-│   └── Dicom_zip/             # 壓縮上傳檔案
-└── tensorflow/                # TensorFlow 模型結果 (已停用)
+<Output_Folder>/
+├── Pred_Infarct.nii.gz               # 梗塞預測遮罩
+├── Prob_Infarct.nii.gz               # 梗塞機率圖
+├── Pred_Infarct_parcellation.nii.gz  # 腦區標籤
+├── Pred_Infarct.json                 # 預測結果 JSON
+├── Pred_Infarct_platform_json.json   # 平台格式 JSON
+└── visualization/                     # 視覺化圖片
+    ├── overlay_*.png                  # 疊加圖
+    └── report_*.png                   # 統計報告
 ```
 
-### JSON 格式說明
-
-輸出的 JSON 檔案包含以下資訊：
-- 動脈瘤數量與位置
-- 每個動脈瘤的尺寸（長軸、短軸、體積）
-- 所在血管區域
-- DICOM Series UID
-- 模型版本資訊
-
-## 處理流程
-
-### 完整流程圖
+### 模組 3: WMH 輸出檔案
 
 ```
-1. 環境初始化
-   ├── 檢查 GPU 記憶體使用率
-   └── 設定 TensorFlow GPU 配置
-
-2. 影像前處理
-   ├── 複製輸入 MRA 影像
-   └── 建立工作目錄
-
-3. AI 推論 (gpu_aneurysm.py)
-   ├── nnU-Net 動脈瘤偵測
-   ├── 血管分割 (16 區域)
-   └── 產生機率圖
-
-4. 影像重建
-   ├── 影像 Reslice
-   ├── MIP 影像生成 (Pitch/Yaw)
-   └── DICOM 解壓縮
-
-5. 數據分析
-   ├── 動脈瘤量測
-   ├── 計算體積與尺寸
-   └── 產生 Excel 報告
-
-6. 格式轉換
-   ├── 產生 DICOM-SEG
-   └── 生成平台 JSON
-
-7. 結果上傳
-   ├── 上傳至 Orthanc PACS
-   ├── 上傳 JSON 至 AI 平台
-   └── 複製結果到輸出目錄
-
-8. 清理與記錄
-   ├── 寫入執行 Log
-   └── 計算總執行時間
+<Output_Folder>/
+├── Pred_WMH.nii.gz                   # WMH 預測遮罩
+├── Prob_WMH.nii.gz                   # WMH 機率圖
+├── Pred_WMH_parcellation.nii.gz      # 腦區標籤
+├── Pred_WMH.json                     # 預測結果 JSON
+├── Pred_WMH_platform_json.json       # 平台格式 JSON
+└── visualization/                     # 視覺化圖片
+    ├── overlay_*.png                  # 疊加圖
+    └── fazekas_report.png             # Fazekas 評分報告
 ```
 
-### 各階段時間估算
+---
 
-| 階段 | 預估時間 | GPU 使用 |
-|------|---------|---------|
-| AI 推論 | 60-120 秒 | 高 |
-| 影像 Reslice | 10-20 秒 | 低 |
-| MIP 生成 | 30-60 秒 | 中 |
-| 數據分析 | 5-10 秒 | 低 |
-| DICOM-SEG | 10-20 秒 | 低 |
-| 上傳處理 | 10-30 秒 | 無 |
-| **總計** | **2-4 分鐘** | - |
+## 處理流程比較
+
+### 模組 1: 動脈瘤檢測流程
+
+```
+1. 環境初始化 → GPU 記憶體檢查
+2. 影像前處理 → 複製輸入 MRA
+3. AI 推論 → nnU-Net 3D 動脈瘤偵測 + 血管分割
+4. 影像重建 → Reslice + MIP 生成 (Pitch/Yaw)
+5. 數據分析 → 動脈瘤量測 + Excel 報告
+6. 格式轉換 → DICOM-SEG + JSON
+7. 結果上傳 → Orthanc PACS + AI 平台
+```
+
+**預估時間**: 2-4 分鐘
+
+### 模組 2: 梗塞分析流程
+
+```
+1. 環境初始化 → GPU 記憶體檢查
+2. SynthSEG 處理 → 腦區分割 (如未提供)
+3. 影像前處理 → BET 腦部提取 + 正規化
+4. AI 推論 → nnU-Net 2D 梗塞偵測
+5. 後處理 → 腦區統計 + 視覺化
+6. 格式轉換 → DICOM-SEG + JSON + Excel
+7. 結果上傳 → AI 平台
+```
+
+**預估時間**: 
+- 有提供 SynthSEG: 90-120 秒
+- 無 SynthSEG: 150-210 秒
+
+### 模組 3: WMH 評估流程
+
+```
+1. 環境初始化 → GPU 記憶體檢查
+2. SynthSEG 處理 → 腦區分割 (如未提供)
+3. 影像前處理 → BET 腦部提取 + 正規化
+4. AI 推論 → nnU-Net 2D WMH 分割
+5. 後處理 → Fazekas 評分 + 視覺化
+6. 格式轉換 → DICOM-SEG + JSON + Excel
+7. 結果上傳 → AI 平台
+```
+
+**預估時間**: 
+- 有提供 SynthSEG: 60-90 秒
+- 無 SynthSEG: 120-180 秒
+
+---
 
 ## 模型說明
 
-### nnU-Net 模型
-- **用途**: 動脈瘤主要檢測模型
-- **架構**: nnU-Net 3D Full Resolution
-- **訓練資料**: Dataset080_DeepAneurysm
-- **輸出**: 二元分割遮罩 + 機率圖
-- **Group ID**: 56
+### 動脈瘤檢測模型
 
-### 血管分割模型
-- **用途**: 腦血管 16 區域分割
-- **架構**: ResUNet
-- **輸出**: 16 類別血管標籤
+| 項目 | 規格 |
+|------|------|
+| 模型架構 | nnU-Net 3D Full Resolution |
+| 訓練資料集 | Dataset080_DeepAneurysm |
+| 輸入 | MRA T1 影像 |
+| 輸出 | 二元分割遮罩 + 機率圖 + 16 區域血管 |
+| Group ID | 56 |
+| 框架 | TensorFlow 2.14 |
+
+### 急性梗塞檢測模型
+
+| 項目 | 規格 |
+|------|------|
+| 模型架構 | nnU-Net 2D |
+| 訓練資料集 | Dataset040_DeepInfarct |
+| 輸入 | ADC + DWI0 + DWI1000 (3 通道) |
+| 輸出 | 二元分割遮罩 + 機率圖 + 腦區統計 |
+| Group ID | 57 |
+| 框架 | PyTorch |
+
+### 白質病變檢測模型
+
+| 項目 | 規格 |
+|------|------|
+| 模型架構 | nnU-Net 2D |
+| 訓練資料集 | Dataset015_DeepLacune |
+| 輸入 | T2-FLAIR |
+| 輸出 | 二元分割遮罩 + 機率圖 + Fazekas 評分 |
+| Group ID | 58 |
+| 框架 | PyTorch |
+
+---
 
 ## 注意事項
 
 ### ⚠️ 重要限制
 
-1. **NumPy 版本限制**: 目前程式需要 NumPy < 2.0，因為 DICOM 壓縮功能尚未相容新版本
-2. **GPU 記憶體**: 至少需要 12GB 顯存，建議 16GB 以上
-3. **檔案格式**: 輸入必須是 NIfTI 格式 (.nii 或 .nii.gz)
-4. **DICOM 必要性**: 需要提供原始 DICOM 目錄以產生 DICOM-SEG
+1. **套件版本限制**: 
+   - **Python**: 3.9-3.11 (推薦 3.10)
+   - **PyTorch**: 2.6.0 (CUDA 12.4)
+   - **TensorFlow**: 2.14.0
+   - **NumPy**: 1.26.4 (< 2.0，DICOM 壓縮功能尚未相容新版本)
+   - **CUDA**: 12.4 (與 PyTorch 2.6.0 對應)
+
+2. **GPU 記憶體需求**:
+   - 動脈瘤模組: 至少 12GB，建議 16GB (3D Full Resolution)
+   - 梗塞模組: 至少 8GB (2D 模型)
+   - WMH 模組: 至少 8GB (2D 模型)
+
+3. **系統資源需求**:
+   - **RAM**: 推薦 64GB 以上
+   - **CPU**: 推薦 16 核心以上
+   - **儲存空間**: 建議 500GB 以上
+
+4. **檔案格式**:
+   - 輸入必須是 NIfTI 格式 (.nii 或 .nii.gz)
+   - DICOM 目錄必須包含完整序列
+
+5. **SynthSEG 選項**:
+   - 梗塞和 WMH 模組可選擇提供或自動生成
+   - 自動生成會增加 60-90 秒處理時間
+   - 需要 TensorFlow 2.14.0
 
 ### 🔧 故障排除
 
 #### GPU Out of Memory
 ```bash
-# 減少批次大小或使用較小的影像切片
-# 調整 gpu_aneurysm.py 中的參數
+# 檢查 GPU 使用狀況
+nvidia-smi
+
+# 確認沒有其他程式占用 GPU
+# 程式會自動檢查 GPU 使用率 > 60% 時跳過執行
+```
+
+#### 前處理失敗
+```bash
+# 檢查 BET 腦部提取工具
+which bet
+
+# 如未安裝 FSL
+# Ubuntu: sudo apt-get install fsl
+# 或參考: https://fsl.fmrib.ox.ac.uk/fsl/fslwiki
 ```
 
 #### DICOM 壓縮失敗
@@ -297,20 +471,48 @@ sudo apt-get install libgdcm-tools
 gdcminfo <dicom_file>
 ```
 
-#### 環境啟動失敗
+#### SynthSEG 執行錯誤
 ```bash
-# 重新初始化 conda
-source /home/tmu/miniconda3/etc/profile.d/conda.sh
+# 確認 SynthSEG 模型路徑正確
+ls /data/4TB1/pipeline/chuan/code/model_weights/SynthSeg_parcellation_tf28/
 
-# 確認環境存在
-conda env list
+# 檢查 TensorFlow 版本
+python -c "import tensorflow as tf; print(tf.__version__)"
+```
+
+#### 套件版本衝突
+```bash
+# 檢查 PyTorch 和 CUDA 版本
+python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA:', torch.cuda.is_available())"
+
+# 檢查 NumPy 版本
+python -c "import numpy as np; print('NumPy:', np.__version__)"
+
+# 如果版本不符，重新安裝
+pip uninstall torch torchvision numpy -y
+pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+pip install numpy==1.26.4
 ```
 
 ### 📊 效能優化建議
 
-1. **GPU 使用率管理**: 程式會檢查 GPU 使用率，當使用率 > 60% 時會跳過執行
-2. **多案例處理**: 建議使用佇列系統避免 GPU 衝突
-3. **暫存清理**: 定期清理處理目錄以節省空間
+1. **GPU 使用率管理**:
+   - 程式會自動檢查 GPU 使用率
+   - 當使用率 > 60% 時會跳過執行
+
+2. **多案例處理**:
+   - 建議使用佇列系統避免 GPU 衝突
+   - 可同時處理不同模組（動脈瘤 + 梗塞/WMH）
+
+3. **暫存清理**:
+   - 定期清理 `/data/4TB1/pipeline/chuan/process/` 以節省空間
+   - 每個案例約佔用 2-5GB
+
+4. **批次處理**:
+   - 可使用 Shell 腳本批次執行多個案例
+   - 建議每批不超過 5 個案例避免 GPU 記憶體不足
+
+---
 
 ## Log 記錄
 
@@ -324,8 +526,11 @@ conda env list
 - 各階段處理時間
 - 錯誤訊息與堆疊追蹤
 - GPU 記憶體使用狀況
+- 前處理/後處理狀態
 
-### Log 格式
+### Log 格式範例
+
+#### 動脈瘤模組
 ```
 2025-06-04 14:30:15 INFO !!! Pre_Aneurysm call.
 2025-06-04 14:30:15 INFO 17390820_20250604_MR_21406040004 Start...
@@ -336,10 +541,33 @@ conda env list
 2025-06-04 14:34:00 INFO [Done All Pipeline!!! ] spend 225 sec
 ```
 
+#### 梗塞模組
+```
+2025-11-17 10:15:20 INFO !!! Pre_Infarct call.
+2025-11-17 10:15:20 INFO 01550089_20251117_MR_21411150023 Start...
+2025-11-17 10:15:25 INFO Running stage 1: Infarct inference!!!
+2025-11-17 10:16:50 INFO [Done AI Inference... ] spend 85 sec
+2025-11-17 10:17:10 INFO Running stage 2: Post-processing!!!
+2025-11-17 10:17:35 INFO [Done Post-processing... ] spend 25 sec
+```
+
+#### WMH 模組
+```
+2025-11-17 10:20:15 INFO !!! Pre_WMH call.
+2025-11-17 10:20:15 INFO 01550089_20251117_MR_21411150023 Start...
+2025-11-17 10:20:20 INFO Running stage 1: WMH inference!!!
+2025-11-17 10:21:10 INFO [Done AI Inference... ] spend 50 sec
+2025-11-17 10:21:25 INFO Running stage 2: Post-processing!!!
+2025-11-17 10:21:45 INFO [Done Post-processing... ] spend 20 sec
+```
+
+---
+
 ## 系統配置
 
-### 路徑配置
-在 `pipeline_aneurysm_tensorflow.py` 中可修改以下路徑：
+### 共用路徑配置
+
+可在各 pipeline 程式中修改以下路徑：
 
 ```python
 # 程式碼路徑
@@ -347,9 +575,6 @@ path_code = '/data/4TB1/pipeline/chuan/code/'
 
 # 處理暫存路徑
 path_process = '/data/4TB1/pipeline/chuan/process/'
-
-# nnU-Net 模型路徑
-path_nnunet_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/...'
 
 # JSON 輸出路徑
 path_json = '/data/4TB1/pipeline/chuan/json/'
@@ -361,40 +586,58 @@ path_log = '/data/4TB1/pipeline/chuan/log/'
 gpu_n = 0
 ```
 
-## API 整合（已註解，可啟用）
+### 模組特定路徑
 
-程式碼中預留了 Radax 系統整合的部分，若需啟用：
-
-1. 取消註解 Line 410-486
-2. 修改 API 端點 URL
-3. 確認 DICOM-SEG 檔案命名規則
-
+#### 動脈瘤模組 (`pipeline_aneurysm_tensorflow.py`)
 ```python
-# API 端點範例
-api_url = 'http://localhost:4000/v1/ai-inference/inference-complete'
-
-# POST 資料格式
-payload = {
-    "studyInstanceUid": study_instance_uid,
-    "seriesInstanceUid": series_instance_uid
-}
+path_processModel = os.path.join(path_process, 'Deep_Aneurysm')
+path_nnunet_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres'
 ```
+
+#### 梗塞模組 (`pipeline_infarct_torch.py`)
+```python
+path_processModel = os.path.join(path_process, 'Deep_Infarct')
+path_nnunet_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset040_DeepInfarct/nnUNetTrainer__nnUNetPlans__2d'
+```
+
+#### WMH 模組 (`pipeline_wmh_torch.py`)
+```python
+path_processModel = os.path.join(path_process, 'Deep_WMH')
+path_nnunet_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset015_DeepLacune/nnUNetTrainer__nnUNetPlans__2d'
+```
+
+---
 
 ## 授權與引用
 
 本系統使用以下開源專案：
-- nnU-Net: https://github.com/MIC-DKFZ/nnUNet
-- TensorFlow: https://www.tensorflow.org/
-- MONAI: https://monai.io/
+- **nnU-Net**: https://github.com/MIC-DKFZ/nnUNet
+- **TensorFlow**: https://www.tensorflow.org/
+- **PyTorch**: https://pytorch.org/
+- **SynthSeg**: https://github.com/BBillot/SynthSeg
+- **FSL**: https://fsl.fmrib.ox.ac.uk/fsl/fslwiki
+
+---
+
+## 版本歷史
+
+### v2.1 (2025-01-13)
+- ✨ 新增急性腦梗塞分析模組
+- ✨ 新增白質病變評估模組
+- 🔧 重構程式碼結構，模組化前處理/後處理
+- 📝 更新文檔，整合三大模組說明
+
+### v2.0 (2025-01-13)
+- 🎉 初始版本 - 動脈瘤檢測模組
+- 🔧 整合 nnU-Net 和 TensorFlow 模型
+- 📊 支援 DICOM-SEG 輸出
+
+---
 
 ## 聯絡資訊
 
 如有問題或建議，請聯絡開發團隊。
 
----
-
-**版本**: 2.0  
-**最後更新**: 2025-01-13  
+**維護團隊**: TMU AI Medical Team  
 **作者**: chuan  
-**維護團隊**: TMU AI Medical Team
-
+**最後更新**: 2025-01-13
