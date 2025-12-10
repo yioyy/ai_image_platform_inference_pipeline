@@ -60,11 +60,11 @@ def after_run(path_nnunet: str, path_output: str, patient_id: str, path_code: st
         json_path = make_infarct_pred_json(
             _id=patient_id,
             path_root=pathlib.Path(path_nnunet),
-            group_id=57,
+            group_id=56,
         )
 
         try:
-            orthanc_zip_upload(path_dcm, path_zip, ["ADC", "DWI0", "DWI1000", "Dicom-Seg", "Infarct AI Report"])
+            orthanc_zip_upload(path_dcm, path_zip, ["ADC", "DWI1000", "Dicom-Seg", "Infarct AI Report"])
         except Exception as exc:  # noqa: BLE001
             logging.warning("上傳 DICOM 失敗: %s", exc)
 
@@ -92,6 +92,11 @@ def _load_make_pred_json(path_code: str):
 
 def _update_dwi_series(path_dcm: str) -> None:
     """調整 DWI0 與 DWI1000 影像的關鍵 DICOM 標籤。"""
+
+    # specs = (
+    #     ("DWI1000", "DWI b=1000", "02", "1000")
+    # )
+
     specs = (
         ("DWI0", "DWI b=0", "01", "0"),
         ("DWI1000", "DWI b=1000", "02", "1000"),

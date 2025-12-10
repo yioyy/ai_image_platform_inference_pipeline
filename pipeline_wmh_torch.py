@@ -229,6 +229,7 @@ if __name__ == '__main__':
     Inputs = args.Inputs  # 將列表合併為字符串，保留順序
     DicomDirs = args.DicomDir #對應的dicom資料夾，用來做dicom-seg
     path_output = str(args.Output_folder)
+    print('DicomDirs:', DicomDirs)
 
     #下面設定各個路徑
     path_code = '/data/4TB1/pipeline/chuan/code/'

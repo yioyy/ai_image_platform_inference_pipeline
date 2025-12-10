@@ -54,7 +54,7 @@ def after_run_wmh(path_nnunet: str, path_output: str, patient_id: str, path_code
         json_path = make_wmh_pred_json(
             _id=patient_id,
             path_root=pathlib.Path(path_nnunet),
-            group_id=57,
+            group_id=56,
         )
 
         os.makedirs(os.path.join(path_dcm, "T2FLAIR AI Report"), exist_ok=True)

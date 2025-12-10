@@ -59,6 +59,10 @@ from collections import OrderedDict
 from nii_transforms import nii_img_replace
 autotune = tf.data.experimental.AUTOTUNE
 from nnResUNet_long_BigBatch_cosine_AneDilate_classifier_test.gpu_nnUNet import predict_from_raw_data
+import subprocess
+from util_aneurysm import resampleSynthSEG2original
+
+
 
 # histogram
 def get_histogram_xy(arr, mask=None):
@@ -1321,10 +1325,10 @@ def model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name
             # nib.save(new_pred_label_nii, os.path.join(path_nnunetlow, 'Pred.nii.gz')) 
 
             #舊版君彥inference model
-            start_tensorflow = time.time()
-            #pred_prob_map, df_pred, pred_label = predict_aneurysm_best(image_arr, brain_mask, vessel_mask, spacing, model2, verbose=verbose)
-            print(f"[Done TensorFlow Inference... ] spend {time.time() - start_tensorflow:.0f} sec")
-            logging.info(f"[Done TensorFlow Inference...  ] spend {time.time() - start_tensorflow:.0f} sec")
+            # start_tensorflow = time.time()
+            # #pred_prob_map, df_pred, pred_label = predict_aneurysm_best(image_arr, brain_mask, vessel_mask, spacing, model2, verbose=verbose)
+            # print(f"[Done TensorFlow Inference... ] spend {time.time() - start_tensorflow:.0f} sec")
+            # logging.info(f"[Done TensorFlow Inference...  ] spend {time.time() - start_tensorflow:.0f} sec")
 
             #這邊存出君彥inference model的結果
             # save_nii(path_process, brain_mask, vessel_mask, vessel_16labels, new_pred_label, pred_prob_map, out_dir=path_tensorflow)

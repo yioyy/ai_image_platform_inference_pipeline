@@ -79,7 +79,7 @@ def execute_dicomseg_platform_json(_id: str, root_path: Path, group_id: int = 57
 
     lesions = _build_lesion_definitions(excel_row, pred_mask, synth_array, dataset_cfg)
     if not lesions:
-        raise ValueError("Infarct_Pred_list.xlsx 無任何有效病灶資料")
+        logging.info("未偵測到梗塞病灶，將產出不含 mask 的平台 JSON")
 
     series_data = _load_required_series(path_dicom)
     if SeriesTypeEnum.DWI1000.name not in series_data or SeriesTypeEnum.ADC.name not in series_data:
@@ -116,11 +116,12 @@ def execute_dicomseg_platform_json(_id: str, root_path: Path, group_id: int = 57
             mask_series.append(series_obj)
 
     if not mask_series:
-        raise ValueError("無法產生任何 DICOM-SEG")
+        # 無病灶：仍生成 mask 結構，但 instances 為空（對齊 aneurysm 行為）
+        mask_series = _build_empty_mask_series(series_data)
 
     study_request = _build_study_request(series_data, group_id, len(lesions))
     sorted_request = _build_sorted_request(series_data)
-    mask_request = InfarctMaskRequest(
+    mask_request: Optional[InfarctMaskRequest] = InfarctMaskRequest(
         study_instance_uid=study_request.study_instance_uid,
         group_id=group_id,
         model=[
@@ -314,6 +315,25 @@ def _build_mask_series(
     )
 
 
+def _build_empty_mask_series(series_data: Dict[str, SeriesBundle]) -> List[InfarctMaskSeriesRequest]:
+    """無病灶時依系列建立空的 mask series（instances 為空）。"""
+    empty_series: List[InfarctMaskSeriesRequest] = []
+    for series_enum in (SeriesTypeEnum.DWI1000, SeriesTypeEnum.ADC):
+        bundle = series_data.get(series_enum.name)
+        if not bundle or not bundle.source_images:
+            continue
+        series_instance_uid = bundle.source_images[0].get((0x0020, 0x000E)).value
+        empty_series.append(
+            InfarctMaskSeriesRequest(
+                series_instance_uid=series_instance_uid,
+                series_type=series_enum.name,
+                instances=[],
+                model_type=ModelTypeEnum.Infarct.value,
+            )
+        )
+    return empty_series
+
+
 def _build_study_request(
     series_data: Dict[str, SeriesBundle], group_id: int, lesion_count: int
 ) -> StudyRequest:
@@ -357,6 +377,9 @@ def _build_study_components(
     model_entries: List[StudyModelRequest] = []
 
     for series_name, bundle in series_data.items():
+        if series_name == SeriesTypeEnum.DWI0.name:
+            # 不在 study/model 中包含 DWI0
+            continue
         if not bundle.source_images:
             continue
         first_dcm = bundle.source_images[0]
@@ -389,7 +412,10 @@ def _build_study_components(
 def _build_sorted_request(series_data: Dict[str, SeriesBundle]) -> SortedRequest:
     sorted_series: List[SortedSeriesRequest] = []
     study_uid = ""
-    for bundle in series_data.values():
+    for series_name, bundle in series_data.items():
+        if series_name == SeriesTypeEnum.DWI0.name:
+            # 排序列表不包含 DWI0
+            continue
         if not bundle.source_images:
             continue
         instances = []

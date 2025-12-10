@@ -11,7 +11,7 @@ source /home/tmu/miniconda3/etc/profile.d/conda.sh
 conda activate tf_2_14
 
 # 執行你的 python 程式，並傳入參數
-python /data/4TB1/pipeline/chuan/code/pipeline_infarct_torch.py --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4"
+python /data/4TB1/pipeline/chuan/code/pipeline_infarct_torch.py --ID "$1" --Inputs "$2" "$3" "$4" --DicomDir "$5" "$6" "$7" --Output_folder "$8"
 
 # 停用環境
 conda deactivate 
