@@ -175,6 +175,8 @@ def pipeline_wmh(ID,
                 shutil.copy(os.path.join(path_processID, 'T2FLAIR.nii.gz'), os.path.join(path_nii_n, 'T2FLAIR.nii.gz'))
             if not os.path.isfile(os.path.join(path_nii_n, 'SynthSEG.nii.gz')):
                 shutil.copy(os.path.join(path_processID, 'SynthSEG.nii.gz'), os.path.join(path_nii_n, 'SynthSEG.nii.gz'))
+            if not os.path.isfile(os.path.join(path_nii_n, 'SynthSEG_Brain.nii.gz')):
+                shutil.copy(os.path.join(path_processID, 'SynthSEG_Brain.nii.gz'), os.path.join(path_nii_n, 'SynthSEG_Brain.nii.gz'))
             if not os.path.isfile(os.path.join(path_nii_n, 'Pred.nii.gz')):
                 shutil.copy(os.path.join(path_nnunet, 'Pred.nii.gz'), os.path.join(path_nii_n, 'Pred.nii.gz'))
             

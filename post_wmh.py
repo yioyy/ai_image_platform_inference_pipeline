@@ -89,6 +89,7 @@ def postprocess_wmh_results(
     required = {
         "t2": os.path.join(path_nii, "T2FLAIR.nii.gz"),
         "synthseg": os.path.join(path_nii, "SynthSEG.nii.gz"),
+        "synthseg_brain": os.path.join(path_nii, "SynthSEG_Brain.nii.gz"),
         "pred": os.path.join(path_nii, "Pred.nii.gz"),
     }
     for name, path in required.items():
@@ -98,21 +99,24 @@ def postprocess_wmh_results(
 
     t2_nii = nib.load(required["t2"])
     synthseg_nii = nib.load(required["synthseg"])
+    synthseg_brain_nii = nib.load(required["synthseg_brain"])
     pred_nii = nib.load(required["pred"])
 
     t2_array = data_translate(np.asanyarray(t2_nii.dataobj), t2_nii)
     synthseg_array = data_translate(np.asanyarray(synthseg_nii.dataobj), synthseg_nii)
+    synthseg_brain_array = data_translate(np.asanyarray(synthseg_brain_nii.dataobj), synthseg_brain_nii)
     pred_mask = data_translate(np.asanyarray(pred_nii.dataobj), pred_nii)
     pred_mask = (pred_mask > 0).astype(np.uint8)
 
     voxel_ml = float(np.prod(t2_nii.header.get_zooms()) / 1000.0)
     wm_mask = (synthseg_array > 0).astype(np.uint8)
+    wm_mask_brain = (synthseg_brain_array > 0).astype(np.uint8)
     synthseg_overlap = pred_mask * synthseg_array
 
     total_voxel = int(pred_mask.sum())
     total_volume_ml = round(total_voxel * voxel_ml, 1)
 
-    brain_voxel = max(int(wm_mask.sum()), 1)
+    brain_voxel = max(int(wm_mask_brain.sum()), 1)
     percentage = (total_voxel / brain_voxel) * 100.0
     if total_voxel == 0:
         fazekas = 0

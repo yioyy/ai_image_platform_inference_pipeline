@@ -3,8 +3,13 @@ import os
 
 
 def load_dotenv():
-    from dotenv import load_dotenv
-    env_state = os.getenv("ENV_STATE",'dev')
+    try:
+        from dotenv import load_dotenv
+    except ModuleNotFoundError:
+        return
+
+    env_state = os.getenv("ENV_STATE", "dev")
+    del env_state  # 預留：未來可依環境載入 .env.<env_state>
     load_dotenv()
     # load_dotenv(f'.env.{env_state}',override=True)
 

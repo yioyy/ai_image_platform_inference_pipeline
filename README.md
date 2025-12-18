@@ -249,6 +249,45 @@ conda deactivate
 
 ---
 
+### 模組 4: Follow-up 前後比較（檔案導向）
+
+此模組用於比較 **baseline** 與 **followup** 兩次檢查，並輸出：
+- `Pred_<model>_followup.nii.gz`：合併標註（1=new、2=stable、3=disappeared）
+- `Followup_<model>_platform_json.json`：平台格式 JSON（在 baseline JSON 上新增 followup 欄位與病灶配對狀態）
+
+#### 直接執行 Python（建議在 Linux / 已安裝 FSL 的環境）
+
+```bash
+python pipeline_followup.py \
+  --baseline_ID "<Baseline_ID>" \
+  --baseline_Inputs "<Baseline_Pred.nii.gz>" "<Baseline_SynthSEG.nii.gz>" \
+  --baseline_DicomDir "<Baseline_DICOM_Dir_or_empty>" \
+  --baseline_DicomSegDir "<Baseline_DicomSegDir>" \
+  --baseline_json "<Baseline_platform_json.json>" \
+  --followup_ID "<Followup_ID>" \
+  --followup_Inputs "<Followup_Pred.nii.gz>" "<Followup_SynthSEG.nii.gz>" \
+  --followup_DicomSegDir "<Followup_DicomSegDir>" \
+  --followup_json "<Pred_<model>_platform_json.json>" \
+  --path_output "<Output_Folder>" \
+  --model "CMB" \
+  --path_process "./process/Deep_FollowUp/" \
+  --path_log "./log/" \
+  --fsl_flirt_path "/usr/local/fsl/bin/flirt"
+```
+
+#### 輸出（Follow-up）
+
+```
+<Output_Folder>/<Baseline_ID>/
+├── Followup_<model>_platform_json.json
+├── Pred_<model>_followup.nii.gz
+└── dicom-seg/
+    ├── baseline/     # baseline dicom-seg 複製
+    └── followup/     # followup dicom-seg 複製
+```
+
+---
+
 ## 參數說明
 
 ### 模組 1: 動脈瘤檢測參數
