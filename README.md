@@ -251,9 +251,14 @@ conda deactivate
 
 ### 模組 4: Follow-up 前後比較（檔案導向）
 
-此模組用於比較 **baseline** 與 **followup** 兩次檢查，並輸出：
-- `Pred_<model>_followup.nii.gz`：合併標註（1=new、2=stable、3=disappeared）
-- `Followup_<model>_platform_json.json`：平台格式 JSON（在 baseline JSON 上新增 followup 欄位與病灶配對狀態）
+此模組用於比較 **baseline** 與 **followup** 兩次檢查（檔案導向），流程重點如下：
+- 複製 baseline/followup 的 `Pred_<model>.nii.gz`、`SynthSEG_<model>.nii.gz` 與平台 JSON 到處理目錄
+- **配準前會以 SynthSEG 的幾何資訊（affine/sform/qform）覆蓋 Pred**（shape 必須一致，避免 voxel grid 不一致導致 overlap=0）
+- 使用 FSL `flirt` 將 followup 對位到 baseline，輸出 `<baseline_id>_<model>.mat` 與 `Pred_<model>_registration.nii.gz`
+- 產出：
+  - `Pred_<model>_followup.nii.gz`：合併標註（1=new、2=stable、3=disappeared）
+  - `Followup_<model>_platform_json.json`：平台格式 JSON（在 baseline JSON 上新增 followup 欄位與病灶配對狀態）
+- `--baseline_DicomDir` 可留空；baseline/followup 的 dicom-seg 會被複製到輸出資料夾
 
 #### 直接執行 Python（建議在 Linux / 已安裝 FSL 的環境）
 
@@ -272,7 +277,8 @@ python pipeline_followup.py \
   --model "CMB" \
   --path_process "./process/Deep_FollowUp/" \
   --path_log "./log/" \
-  --fsl_flirt_path "/usr/local/fsl/bin/flirt"
+  --fsl_flirt_path "/usr/local/fsl/bin/flirt" \
+  --upload_json
 ```
 
 #### 輸出（Follow-up）
