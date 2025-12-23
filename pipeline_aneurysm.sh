@@ -11,7 +11,7 @@ source /home/david/miniconda3/etc/profile.d/conda.sh
 conda activate tf_2_14
 
 # 執行你的 python 程式，並傳入參數
-python /home/david/pipeline/chuan/code/pipeline_aneurysm_tensorflow.py --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4"
+python /home/david/pipeline/chuan/radax/pipeline_aneurysm_tensorflow.py --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4"
 
 # 停用環境
 conda deactivate 
