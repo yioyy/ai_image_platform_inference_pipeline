@@ -20,9 +20,9 @@ import pathlib
 import requests
 import json
 
-study_instance_uid = '1.2.840.113820.7000602646.641.821408220039.8'
-aneurysm_inference_id = 'f3ea8e08-6788-4312-80fa-8438f797876b'
-vessel_inference_id = '0e6c1281-aacf-450c-858e-4d367385e515'
+study_instance_uid = '1.2.840.113820.7000602646.918.821412170060.8'
+aneurysm_inference_id = '704fc56a-a55a-46fe-9478-0c04a1046292'
+vessel_inference_id = '14f5ac0d-b8bc-4dfc-87b8-7ed1777f6bdb'
             
 # 發送POST請求到 /v1/ai-inference/inference-complete
 # 請修改為正確的 API 端點，例如：

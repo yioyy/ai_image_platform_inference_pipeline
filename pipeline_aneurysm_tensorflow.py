@@ -47,6 +47,7 @@ from code_ai.pipeline.dicomseg.build_vessel_dilated import main as make_vessel_p
 
 import pathlib
 import requests
+from typing import Any, Dict, List, Optional
 
 
 #會使用到的一些predict技巧
@@ -95,6 +96,89 @@ def pipeline_aneurysm(ID,
     #當使用gpu有錯時才確認
     logger = tf.get_logger()
     logger.setLevel(logging.ERROR)
+
+    def _try_get_study_instance_uid_from_dicom_dir(dicom_dir: str) -> str:
+        """
+        失敗時用：盡力從輸入 DICOM 資料夾抓 StudyInstanceUID。
+        取不到就回傳空字串，避免整個 pipeline 因為通知 API 而再炸一次。
+        """
+        if not dicom_dir or not os.path.isdir(dicom_dir):
+            return ""
+        try:
+            import pydicom  # lazy import：避免環境沒有 pydicom 時直接掛掉
+        except Exception:
+            return ""
+
+        for root, _, files in os.walk(dicom_dir):
+            for fn in sorted(files):
+                fp = os.path.join(root, fn)
+                if not os.path.isfile(fp):
+                    continue
+                try:
+                    ds = pydicom.dcmread(fp, stop_before_pixels=True, force=True)
+                    uid = str(getattr(ds, "StudyInstanceUID", "") or "")
+                    if uid:
+                        return uid
+                except Exception:
+                    continue
+        return ""
+
+    def _post_inference_complete(
+        *,
+        api_url: str,
+        study_instance_uid: str,
+        aneurysm_inference_id: Optional[str],
+        vessel_inference_id: Optional[str],
+        result: str,
+    ) -> None:
+        """呼叫 /v1/ai-inference/inference-complete；aneurysm_model / vessel_model 各送一次。"""
+        def _with_optional_result(payload: Dict[str, Any]) -> Dict[str, Any]:
+            if result != "":
+                payload["result"] = result
+            return payload
+
+        payloads: List[Dict[str, Any]]
+        if result == "success" or result == "":
+            payloads = [
+                _with_optional_result(
+                    {
+                        "studyInstanceUid": study_instance_uid,
+                        "modelName": "aneurysm_model",
+                        "inferenceId": aneurysm_inference_id,
+                    }
+                ),
+                _with_optional_result(
+                    {
+                        "studyInstanceUid": study_instance_uid,
+                        "modelName": "vessel_model",
+                        "inferenceId": vessel_inference_id,
+                    }
+                ),
+            ]
+        else:
+            payloads = [
+                _with_optional_result(
+                    {
+                        "studyInstanceUid": study_instance_uid,
+                        "modelName": "aneurysm_model",
+                    }
+                ),
+                _with_optional_result(
+                    {
+                        "studyInstanceUid": study_instance_uid,
+                        "modelName": "vessel_model",
+                    }
+                ),
+            ]
+
+        for payload in payloads:
+            try:
+                response = requests.post(api_url, json=payload)
+                print(f"[API POST] payload={payload} Status Code: {response.status_code}, Response: {response.text}")
+                logging.info(f"[API POST] payload={payload} Status Code: {response.status_code}, Response: {response.text}")
+            except Exception as e:
+                print(f"[API POST Error] payload={payload} err={str(e)}")
+                logging.error(f"[API POST Error] payload={payload} err={str(e)}")
 
     #以log紀錄資訊，先建置log
     localt = time.localtime(time.time()) # 取得 struct_time 格式的時間
@@ -433,27 +517,13 @@ def pipeline_aneurysm(ID,
             # api_url = 'http://10.103.1.193:3000/v1/ai-inference/inference-complete'
             api_url = 'http://localhost:24000/v1/ai-inference/inference-complete'  # TO: 請修改為正確的 API 端點
 
-            # 需求：aneurysm_model / vessel_model 各呼叫一次
-            api_payloads = [
-                {
-                    "studyInstanceUid": study_instance_uid,
-                    "modelName": "aneurysm_model",
-                    "inferenceId": aneurysm_inference_id,
-                },
-                {
-                    "studyInstanceUid": study_instance_uid,
-                    "modelName": "vessel_model",
-                    "inferenceId": vessel_inference_id,
-                },
-            ]
-            for payload in api_payloads:
-                try:
-                    response = requests.post(api_url, json=payload)
-                    print(f"[API POST] payload={payload} Status Code: {response.status_code}, Response: {response.text}")
-                    logging.info(f"[API POST] payload={payload} Status Code: {response.status_code}, Response: {response.text}")
-                except Exception as e:
-                    print(f"[API POST Error] payload={payload} err={str(e)}")
-                    logging.error(f"[API POST Error] payload={payload} err={str(e)}")
+            _post_inference_complete(
+                api_url=api_url,
+                study_instance_uid=study_instance_uid,
+                aneurysm_inference_id=aneurysm_inference_id,
+                vessel_inference_id=vessel_inference_id,
+                result="",
+            )
 
             # #刪除資料夾
             # # if os.path.isdir(path_process):  #如果資料夾存在
@@ -469,6 +539,19 @@ def pipeline_aneurysm(ID,
             code_pass = 1
             msg = "Insufficient GPU Memory"
 
+            # 失敗也要建立 json 並上傳（依需求：result = failed，不帶 inferenceId）
+            api_url = 'http://localhost:24000/v1/ai-inference/inference-complete'  # TO: 請修改為正確的 API 端點
+            study_instance_uid = _try_get_study_instance_uid_from_dicom_dir(path_outdcm)
+            if not study_instance_uid:
+                logging.warning(f"[Failed notify] cannot resolve StudyInstanceUID from dicom dir: {path_outdcm}")
+            _post_inference_complete(
+                api_url=api_url,
+                study_instance_uid=study_instance_uid,
+                aneurysm_inference_id=None,
+                vessel_inference_id=None,
+                result="",
+            )
+
             # #刪除資料夾
             # if os.path.isdir(path_process):  #如果資料夾存在
             #     shutil.rmtree(path_process) #清掉整個資料夾
@@ -476,6 +559,22 @@ def pipeline_aneurysm(ID,
     except Exception:
         logging.error('!!! ' + str(ID) + ' gpu have error code.')
         logging.error("Catch an exception.", exc_info=True)
+        # 發生例外也視為 inference 失敗，補送 failed（不帶 inferenceId）
+        try:
+            api_url = 'http://localhost:24000/v1/ai-inference/inference-complete'  # TO: 請修改為正確的 API 端點
+            study_instance_uid = _try_get_study_instance_uid_from_dicom_dir(path_outdcm)
+            if not study_instance_uid:
+                logging.warning(f"[Failed notify] cannot resolve StudyInstanceUID from dicom dir: {path_outdcm}")
+            _post_inference_complete(
+                api_url=api_url,
+                study_instance_uid=study_instance_uid,
+                aneurysm_inference_id=None,
+                vessel_inference_id=None,
+                result="",
+            )
+        except Exception:
+            # 避免通知失敗影響主流程的錯誤處理
+            logging.error("[Failed notify] error while posting inference-complete failed.", exc_info=True)
         # 刪除資料夾
         # if os.path.isdir(path_process):  #如果資料夾存在
         #     shutil.rmtree(path_process) #清掉整個資料夾
