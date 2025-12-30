@@ -114,7 +114,7 @@ python pipeline_aneurysm_tensorflow.py \
 
 API 端點在 `pipeline_aneurysm_tensorflow.py` 內：
 
-- `api_url = 'http://localhost:24000/v1/ai-inference/inference-complete'`
+- `api_url = 'http://localhost:4000/v1/ai-inference/inference-complete'`
 
 ---
 
