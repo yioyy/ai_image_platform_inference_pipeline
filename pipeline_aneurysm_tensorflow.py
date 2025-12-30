@@ -243,7 +243,7 @@ def pipeline_aneurysm(ID,
 
             # 定義要傳入的參數，建立指令
             cmd = [
-                   "python", "/home/david/pipeline/chuan/radax/gpu_aneurysm.py",
+                   "python", "/home/david/pipeline/chuan/code/gpu_aneurysm.py",
                    "--path_code", path_code,
                    "--path_process", path_processID,
                    "--path_nnunet_model", path_nnunet_model,
@@ -376,7 +376,7 @@ def pipeline_aneurysm(ID,
             # shutil.copy(os.path.join(path_json_out_n, ID + '_platform_json.json'), os.path.join(path_output, 'Pred_Aneurysm_platform_json.json'))
 
             #radax步驟，接下來完成複製檔案到指定資料夾跟打api通知
-            upload_dir = '/home/david/ai-inference-result-testing' #目的資料夾
+            upload_dir = '/home/david/ai-inference-result' #目的資料夾
             aneurysm_json_file = os.path.join(path_nnunet, 'rdx_aneurysm_pred_json.json')
             vessel_json_file = os.path.join(path_nnunet, 'rdx_vessel_dilated_json.json')
             
@@ -515,7 +515,7 @@ def pipeline_aneurysm(ID,
             # 請修改為正確的 API 端點，例如：
             # api_url = 'http://localhost:8080/v1/ai-inference/inference-complete'
             # api_url = 'http://10.103.1.193:3000/v1/ai-inference/inference-complete'
-            api_url = 'http://localhost:24000/v1/ai-inference/inference-complete'  # TO: 請修改為正確的 API 端點
+            api_url = 'http://localhost:4000/v1/ai-inference/inference-complete'  # TODO: 請修改為正確的 API 端點
 
             _post_inference_complete(
                 api_url=api_url,
@@ -540,7 +540,7 @@ def pipeline_aneurysm(ID,
             msg = "Insufficient GPU Memory"
 
             # 失敗也要建立 json 並上傳（依需求：result = failed，不帶 inferenceId）
-            api_url = 'http://localhost:24000/v1/ai-inference/inference-complete'  # TO: 請修改為正確的 API 端點
+            api_url = 'http://localhost:4000/v1/ai-inference/inference-complete'  # TO: 請修改為正確的 API 端點
             study_instance_uid = _try_get_study_instance_uid_from_dicom_dir(path_outdcm)
             if not study_instance_uid:
                 logging.warning(f"[Failed notify] cannot resolve StudyInstanceUID from dicom dir: {path_outdcm}")
@@ -561,7 +561,7 @@ def pipeline_aneurysm(ID,
         logging.error("Catch an exception.", exc_info=True)
         # 發生例外也視為 inference 失敗，補送 failed（不帶 inferenceId）
         try:
-            api_url = 'http://localhost:24000/v1/ai-inference/inference-complete'  # TO: 請修改為正確的 API 端點
+            api_url = 'http://localhost:4000/v1/ai-inference/inference-complete'  # TO: 請修改為正確的 API 端點
             study_instance_uid = _try_get_study_instance_uid_from_dicom_dir(path_outdcm)
             if not study_instance_uid:
                 logging.warning(f"[Failed notify] cannot resolve StudyInstanceUID from dicom dir: {path_outdcm}")
@@ -603,9 +603,9 @@ if __name__ == '__main__':
     #需要安裝 pip install pylibjpeg pylibjpeg-libjpeg pylibjpeg-openjpeg => 先不壓縮，因為壓縮需要numpy > 2
 
     #下面設定各個路徑
-    path_code = '/home/david/pipeline/chuan/radax/'
+    path_code = '/home/david/pipeline/chuan/code/'
     path_process = '/home/david/pipeline/chuan/process/'  #前處理dicom路徑(test case)
-    path_nnunet_model = '/home/david/pipeline/chuan/radax/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres'
+    path_nnunet_model = '/home/david/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres'
     path_processModel = os.path.join(path_process, 'Deep_Aneurysm')  #前處理dicom路徑(test case)
     #path_processID = os.path.join(path_processModel, ID)  #前處理dicom路徑(test case)
 
