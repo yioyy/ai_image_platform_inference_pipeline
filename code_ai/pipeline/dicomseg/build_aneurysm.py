@@ -105,6 +105,23 @@ def execute_rdx_platform_json(_id: int, path_root: pathlib.Path,
         except Exception:
             return 0
 
+    def _calculate_main_seg_slice_from_pred(pred: np.ndarray, mask_index: int) -> int:
+        """
+        依照 `code_ai/pipeline/dicomseg/aneurysm.py#get_excel_to_pred_json` 的定義：
+        main_seg_slice = int(pred.shape[0] - median(z_indices_with_label))
+
+        注意：這裡同樣採用「slice 層級」判斷，避免單 slice 內像素數量造成偏移。
+        找不到標註時回傳 0，呼叫端可用 fallback（例如沿用 MRA_BRAIN 的 main_seg_slice）。
+        """
+        try:
+            has_annotation = np.any(pred == mask_index, axis=(1, 2))
+            slices_with_annotation = np.where(has_annotation)[0]
+            if len(slices_with_annotation) == 0:
+                return 0
+            return int(pred.shape[0] - np.median(slices_with_annotation))
+        except Exception:
+            return 0
+
     # 為每個序列生成 DICOM-SEG 檔案和預測結果
     # - 每個 mask_index 會產一個 DICOM-SEG 檔案（MRA_BRAIN_A1.dcm / MIP_Pitch_A1.dcm / MIP_Yaw_A1.dcm）
     from code_ai.pipeline.dicomseg.aneurysm import use_create_dicom_seg_file, get_excel_to_pred_json  # local import 避免循環
@@ -190,7 +207,9 @@ def execute_rdx_platform_json(_id: int, path_root: pathlib.Path,
             }
         )
 
-    def _build_reformatted_series(series_name: str, series_description: str) -> Dict[str, Any]:
+    def _build_reformatted_series(
+        series_name: str, series_description: str, pred: Optional[np.ndarray]
+    ) -> Dict[str, Any]:
         # 用 DICOM 第一張當作新生成的 pitch/yaw seriesInstanceUid
         idx = series_name_list.index(series_name)
         first_dcm = series_first_dcm_data_list[idx]
@@ -201,6 +220,15 @@ def execute_rdx_platform_json(_id: int, path_root: pathlib.Path,
         for d in detections:
             mask_index = int(d["mask_index"])
             seg_ds = seg_map.get(mask_index)
+            # 容錯策略（依需求）：
+            # - 若該 series 的 pred 缺檔（pred is None），輸出空字串
+            # - 若該病灶在該 pred 沒標註（computed == 0），輸出空字串
+            # - 否則輸出 computed 的整數
+            main_seg_slice: Any = ""
+            if pred is not None:
+                computed = _calculate_main_seg_slice_from_pred(pred, mask_index)
+                if computed:
+                    main_seg_slice = int(computed)
             reformatted_dets.append(
                 {
                     "annotated_series_instance_uid": annotated_uid,
@@ -210,7 +238,7 @@ def execute_rdx_platform_json(_id: int, path_root: pathlib.Path,
                     "type": d["type"],
                     "location": d["location"],
                     "diameter": d["diameter"],
-                    "main_seg_slice": d["main_seg_slice"],
+                    "main_seg_slice": main_seg_slice,
                     "probability": d["probability"],
                     "mask_index": mask_index,
                     "sub_location": d["sub_location"],
@@ -232,8 +260,8 @@ def execute_rdx_platform_json(_id: int, path_root: pathlib.Path,
         "patient_id": patient_id,
         "detections": detections,
         "reformatted_series": [
-            _build_reformatted_series("MIP_Pitch", "mip_pitch"),
-            _build_reformatted_series("MIP_Yaw", "mip_yaw"),
+            _build_reformatted_series("MIP_Pitch", "mip_pitch", pitch_pred),
+            _build_reformatted_series("MIP_Yaw", "mip_yaw", yaw_pred),
         ],
     }
 
