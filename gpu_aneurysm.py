@@ -1238,30 +1238,47 @@ def model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name
             model2.jit_compile = True
 
             # 2 Get brain mask，先全照君彥pipeline，來不及拉!!!
+            start = time.time()
             brain_seg = get_brain_seg(image_arr, spacing, model0)
             brain_bottom_idx = np.where(np.any(brain_seg > 0, axis=(0,1)))[0][0]
             bet_brain_mask = np.zeros_like(image_arr, dtype=bool)
+            print(f"[Done SynthSEG Brain Seg... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done SynthSEG Brain Seg... ] spend {time.time() - start:.0f} sec")
+            start_bet = time.time()
             bet_brain_mask[:,:,brain_bottom_idx:] = get_BET_brain_mask(image_arr[:,:,brain_bottom_idx:], spacing, bet_iter=1000)
+            print(f"[Done BET... ] spend {time.time() - start_bet:.0f} sec")
+            logging.info(f"[Done BET... ] spend {time.time() - start_bet:.0f} sec")
             brain_mask = modify_brain_mask((brain_seg > 0)|(bet_brain_mask), spacing, verbose=verbose)
             del brain_seg, bet_brain_mask
+            print(f"[Done Get Total brain mask time... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done Get Total brain mask time... ] spend {time.time() - start:.0f} sec")
                 
             # 3 Get vessel mask
+            start = time.time()
             vessel_threshold, _ = VesselSegmenter().threshold_segmentation(image_arr, brain_mask, spacing)
+            print(f"[Done Vessel AI Inference... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done Vessel AI Inference... ] spend {time.time() - start:.0f} sec")
             vessel_seed = get_vessel_seed(vessel_threshold, mask=brain_mask, spacing=spacing)
             pred_vessel_mask = predict_vessel(image_arr, brain_mask, model1, verbose=verbose)
             vessel_mask = combine_two_vessels(vessel_threshold, pred_vessel_mask, seed_mask=vessel_seed, brain_mask=brain_mask)
             del vessel_threshold, vessel_seed, pred_vessel_mask, brain_bottom_idx
+            print(f"[Done Get Total vessel mask time... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done Get Total vessel mask time... ] spend {time.time() - start:.0f} sec")
 
             # 3.5 Get vessel skeleton
             #skeleton_labels = get_vessel_skeleton_labels(vessel_mask, spacing)
 
             # 4 get vessel 16labels
+            start = time.time()
             vessel_16labels = predict_vessel_16labels(vessel_mask, model3, spacing, verbose=verbose)
             vessel_16labels, vessel_mask = modify_vessel_16labels(vessel_16labels, spacing)  # 20250716 add
+            save_nii_preprocess(path_process, image_arr, vessel_mask, vessel_16labels, out_dir=path_process) 
+            print(f"[Done Get vessel 16labels post-process... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done Get vessel 16labels post-process... ] spend {time.time() - start:.0f} sec")
 
             # 5 Pred aneurysm，從這一步開始，底下置換成nnU-Net的model，先把正規化的image跟vessel mask存出，準備放入nnU-Net中
             # 5.1 先存出正規化的影像跟血管
-            save_nii_preprocess(path_process, image_arr, vessel_mask, vessel_16labels, out_dir=path_process) 
+            start = time.time()
             path_normimg = os.path.join(path_process, 'Normalized_Image')
             path_vessel = os.path.join(path_process, 'Vessel')
 
@@ -1288,7 +1305,6 @@ def model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name
             
             #複製inference result
             #這邊多2個path，path_tensorflow跟path_nnunet
-            path_tensorflow = os.path.join(path_process, 'tensorflow')
             path_nnunet = os.path.join(path_process, 'nnUNet')
             # path_nnunetlow = os.path.join(path_process, 'nnUNetlowth')
 
@@ -1313,6 +1329,9 @@ def model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name
             new_pred_label_nii = nii_img_replace(prob_nii, new_pred_label)
             nib.save(new_pred_label_nii, os.path.join(path_nnunet, 'Pred.nii.gz'))  
 
+            print(f"[Done Get Aneurysm AI Inference... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done Get Aneurysm AI Inference... ] spend {time.time() - start:.0f} sec")
+
             # #這邊存出nnU-Net low threshold的結果
             # pred_prob_map, df_pred, new_pred_label = filter_aneurysm(prob, spacing_nn, conf_th=0.1, min_diameter=2, top_k=4, obj_th=0.1)
             # #最後存出新mask，存出nifti
@@ -1321,10 +1340,10 @@ def model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name
             # nib.save(new_pred_label_nii, os.path.join(path_nnunetlow, 'Pred.nii.gz')) 
 
             #舊版君彥inference model
-            start_tensorflow = time.time()
-            #pred_prob_map, df_pred, pred_label = predict_aneurysm_best(image_arr, brain_mask, vessel_mask, spacing, model2, verbose=verbose)
-            print(f"[Done TensorFlow Inference... ] spend {time.time() - start_tensorflow:.0f} sec")
-            logging.info(f"[Done TensorFlow Inference...  ] spend {time.time() - start_tensorflow:.0f} sec")
+            # start_tensorflow = time.time()
+            # #pred_prob_map, df_pred, pred_label = predict_aneurysm_best(image_arr, brain_mask, vessel_mask, spacing, model2, verbose=verbose)
+            # print(f"[Done TensorFlow Inference... ] spend {time.time() - start_tensorflow:.0f} sec")
+            # logging.info(f"[Done TensorFlow Inference...  ] spend {time.time() - start_tensorflow:.0f} sec")
 
             #這邊存出君彥inference model的結果
             # save_nii(path_process, brain_mask, vessel_mask, vessel_16labels, new_pred_label, pred_prob_map, out_dir=path_tensorflow)

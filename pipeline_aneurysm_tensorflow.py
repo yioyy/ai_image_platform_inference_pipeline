@@ -93,6 +93,24 @@ def pipeline_aneurysm(ID,
                       gpu_n = 0
                       ):
 
+    # ---- path hygiene ----
+    # 常見問題：有些上游會把 Windows 換行符 \r\n 帶進參數，導致路徑變成 ".../\r/xxx"
+    def _clean_path(p: str) -> str:
+        return os.path.normpath(str(p).strip().replace("\r", "").replace("\n", ""))
+
+    ID = str(ID).strip().replace("\r", "").replace("\n", "")
+    MRA_BRAIN_file = _clean_path(MRA_BRAIN_file)
+    path_output = _clean_path(path_output)
+    path_code = _clean_path(path_code)
+    path_nnunet_model = _clean_path(path_nnunet_model)
+    path_processModel = _clean_path(path_processModel)
+    path_outdcm = _clean_path(path_outdcm)
+    path_json = _clean_path(path_json)
+    path_log = _clean_path(path_log)
+
+    # 確保輸出資料夾存在，避免後面 shutil.copy 直接 FileNotFoundError
+    os.makedirs(path_output, exist_ok=True)
+
     #當使用gpu有錯時才確認
     logger = tf.get_logger()
     logger.setLevel(logging.ERROR)
@@ -330,9 +348,7 @@ def pipeline_aneurysm(ID,
             path_dcmjpeglossless_n = os.path.join(path_nnunet, 'Dicom_JPEGlossless')
             if not os.path.isdir(path_dcmjpeglossless_n):  #如果資料夾不存在就建立
                 os.mkdir(path_dcmjpeglossless_n) #製作nii資料夾         
-            #compress_dicom_into_jpeglossless(path_dcm_t, path_dcmjpeglossless_t)
             #compress_dicom_into_jpeglossless(path_dcm_n, path_dcmjpeglossless_n)
-            #compress_dicom_into_jpeglossless(path_dcm_nl, path_dcmjpeglossless_nl)
 
             #建立json檔
             path_json_out_n = os.path.join(path_nnunet, 'JSON')
@@ -340,7 +356,7 @@ def pipeline_aneurysm(ID,
                 os.mkdir(path_json_out_n) #製作nii資料夾
 
             Series = ['MRA_BRAIN', 'MIP_Pitch', 'MIP_Yaw']
-            group_id3 = 56 # nnU-Net的模型
+            # group_id3 = 56 # nnU-Net的模型
             model_id = '924d1538-597c-41d6-bc27-4b0b359111cf'
             start_json = time.time()
             make_aneurysm_pred_json(ID, pathlib.Path(path_nnunet), model_id)  #(_id, path_root, group_id)
@@ -366,14 +382,6 @@ def pipeline_aneurysm(ID,
             # json_file_n = os.path.join(path_json_out_n, ID + '_platform_json.json')
 
             # upload_json_aiteam(json_file_n)
-
-            #把json跟nii輸出到out資料夾，這裡只傳nnunet的結果，因為nnU-Net的結果比較好
-            # shutil.copy(os.path.join(path_nnunet, 'Pred.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm.nii.gz'))
-            # shutil.copy(os.path.join(path_nnunet, 'Prob.nii.gz'), os.path.join(path_output, 'Prob_Aneurysm.nii.gz'))
-            # shutil.copy(os.path.join(path_processID, 'Vessel.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm_Vessel.nii.gz'))
-            # shutil.copy(os.path.join(path_processID, 'Vessel_16.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm_Vessel16.nii.gz'))
-            # shutil.copy(os.path.join(path_json_out_n, ID + '_platform_json.json'), os.path.join(path_output, 'Pred_Aneurysm.json'))
-            # shutil.copy(os.path.join(path_json_out_n, ID + '_platform_json.json'), os.path.join(path_output, 'Pred_Aneurysm_platform_json.json'))
 
             #radax步驟，接下來完成複製檔案到指定資料夾跟打api通知
             upload_dir = '/home/david/ai-inference-result' #目的資料夾
@@ -528,6 +536,14 @@ def pipeline_aneurysm(ID,
             # #刪除資料夾
             # # if os.path.isdir(path_process):  #如果資料夾存在
             # #     shutil.rmtree(path_process) #清掉整個資料夾 
+
+            #把json跟nii輸出到out資料夾，這裡只傳nnunet的結果，因為nnU-Net的結果比較好
+            shutil.copy(os.path.join(path_nnunet, 'Pred.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm.nii.gz'))
+            shutil.copy(os.path.join(path_nnunet, 'Prob.nii.gz'), os.path.join(path_output, 'Prob_Aneurysm.nii.gz'))
+            shutil.copy(os.path.join(path_processID, 'Vessel.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm_Vessel.nii.gz'))
+            shutil.copy(os.path.join(path_processID, 'Vessel_16.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm_Vessel16.nii.gz'))
+            shutil.copy(aneurysm_json_file, os.path.join(path_output, 'Pred_Aneurysm.json'))
+            shutil.copy(aneurysm_json_file, os.path.join(path_output, 'Pred_Aneurysm_platform_json.json'))
 
             print(f"[Done All Pipeline!!! ] spend {time.time() - start:.0f} sec")
             logging.info(f"[Done All Pipeline!!! ] spend {time.time() - start:.0f} sec")
