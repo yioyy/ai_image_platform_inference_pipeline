@@ -1,0 +1,14 @@
+{
+    "TASK": "DeepMRAVessel",
+    "No.": "135",
+    "channel_names": {
+        "0": "MRI_custom_normalize_1"
+    },
+    "labels": {
+        "background": 0,
+        "Vessel": 1
+    },
+    "numTraining": 99,
+    "file_ending": ".nii.gz",
+    "val_as_test": "n"
+}

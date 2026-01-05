@@ -347,7 +347,15 @@ class ReviewAneurysmPlatformJSONBuilder(ReviewBasePlatformJSONBuilder):
             # Extract UIDs from the DICOM-SEG and source images
             seg_sop_instance_uid = dcm_seg.get((0x008, 0x0018)).value
             seg_series_instance_uid = dcm_seg.get((0x020, 0x000E)).value
-            dicom_sop_instance_uid = source_images[int(result['main_seg_slice'])].get((0x008, 0x0018)).value
+            dicom_ds = source_images[int(result['main_seg_slice'])]
+            dicom_sop_instance_uid = dicom_ds.get((0x008, 0x0018)).value
+            instance_number_elem = dicom_ds.get((0x0020, 0x0013))
+            im_instance_number = None
+            if instance_number_elem is not None and instance_number_elem.value is not None:
+                try:
+                    im_instance_number = int(instance_number_elem.value)
+                except (TypeError, ValueError):
+                    im_instance_number = None
             # mask_index = kwargs.get('mask_index', 1)
             # main_seg_slice = kwargs.get('main_seg_slice', "")
             # diameter = kwargs.get('diameter', '0.0')
@@ -362,6 +370,8 @@ class ReviewAneurysmPlatformJSONBuilder(ReviewBasePlatformJSONBuilder):
                                        'prob_max'       : filter_cmd['prob_max'],
                                        #'main_seg_slice' : filter_cmd['main_seg_slice'],
                                        'main_seg_slice' : len(source_images) - result['main_seg_slice'],
+                                       # 對應 dicom_sop_instance_uid 的 DICOM (0020,0013) Instance Number
+                                       'im'             : im_instance_number,
                                        'mask_index'     : result['mask_index'],
                                        'mask_name': "A{}".format(result['mask_index']),
                                        'seg_sop_instance_uid': seg_sop_instance_uid,
@@ -376,7 +386,7 @@ class ReviewAneurysmPlatformJSONBuilder(ReviewBasePlatformJSONBuilder):
 
 
     def get_study_model(self, series_type: SeriesTypeEnum, pred_data: Dict[str, Any],
-                        *args, **kwargs) -> "StudyModelClass":
+                        *args, **kwargs) -> StudyModelRequest:
         pred_json_list = pred_data['data']
         study_model = dict(lession=len(pred_json_list),
                            series_type=series_type.value,
@@ -495,7 +505,7 @@ def use_create_dicom_seg_file(path_nii:pathlib.Path,
                               source_images: List[FileDataset | DicomDir],):
     # Load prediction data from NIfTI file
     if series_name == "MRA_BRAIN":
-        new_nifti_array = utils.get_array_to_dcm_axcodes(path_nii.joinpath(f'Pred.nii.gz'))
+        new_nifti_array = utils.get_array_to_dcm_axcodes(path_nii.joinpath('Pred.nii.gz'))
     else:
         new_nifti_array = utils.get_array_to_dcm_axcodes(path_nii.joinpath(f'{series_name}_pred.nii.gz'))
     pred_data_unique = np.unique(new_nifti_array)

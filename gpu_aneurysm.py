@@ -62,26 +62,6 @@ from nnResUNet_long_BigBatch_cosine_AneDilate_classifier_test.gpu_nnUNet import 
 import subprocess
 from util_aneurysm import resampleSynthSEG2original
 
-
-
-# histogram
-def get_histogram_xy(arr, mask=None):
-    if mask is None:
-        mask = np.ones_like(arr, dtype=bool)
-    hist, bin_edges = np.histogram(arr[mask].ravel(), bins=100)
-    bins_mean = [0.5 * (bin_edges[i] + bin_edges[i+1]) for i in range(100)]
-    return [bins_mean, hist]
-
-# keep largest (cpu)
-def binary_keep_largest(mask, k=1):
-    label_arr = label(mask, connectivity=1)
-    props = regionprops_table(label_arr, properties=['label','area'])
-    sort_idx = np.argsort(props['area'])[::-1][:k]
-    largest_lb = props['label'][sort_idx]
-    mask = np.isin(label_arr, largest_lb)
-    del label_arr, props, sort_idx, largest_lb
-    return mask
-
 def custom_normalize_1(volume, mask=None, new_min=0., new_max=0.5, min_percentile=0.5, max_percentile=99.5, use_positive_only=True):
     """This function linearly rescales a volume between new_min and new_max.
     :param volume: a numpy array
@@ -153,66 +133,6 @@ def resize_volume(arr, spacing=None, target_spacing=None, target_size=None, orde
         out_vol = np.clip(out_vol, dtype_info.min, dtype_info.max)
     return out_vol.astype(dtype)
 
-# mask interpolation
-def mask_interpolation(mask, factor, **kwargs):
-    """ Resizing the mask through interpolation by building the distance field.
-        Randomly sampling factor and multi-categories are considered.
-        Implemented by Kuan (Kevin) Zhang, Ph.D., Radiology Informatics Laboratory, Mayo Clinic.
-
-        This implementation follows:
-        How to properly interpolate masks for deep learning in medical imaging?
-        Args:
-            mask (np.array): The initial mask matrix in the shape: (slices, x, y)
-            factor (tuple): The sampling factor of resizing in the shape: (fx, fy, fz)
-        Output:
-            The interpolated mask matrix to return.
-    """
-
-    # Check the number of mask types contained in the input.
-    mask_types = int(mask.max())
-
-    if mask_types > 1:
-        # Creat a list for the multi-category lables.
-        mask_mul = []
-        # Conver the mask values into binary for each type.
-        for i in range(mask_types):
-            mask_mul.append(np.where(mask == i+1,1,0))
-        mask_dist = mask_mul.copy()
-
-        for i in range(mask_types):
-            for z in range(mask.shape[-1]):
-                # The inner distance field to the edge:
-                dist_field_inner = ndi.distance_transform_edt(mask_mul[i][:,:,z])
-                # The outer distance field to the edge:
-                dist_field_outer = ndi.distance_transform_edt(np.logical_not(mask_mul[i][:,:,z]))
-                mask_dist[i][:,:,z] = dist_field_inner - dist_field_outer
-            mask_dist[i] = ndi.zoom(mask_dist[i], factor, order=1,
-                                    mode='grid-mirror', prefilter=True, grid_mode=False)
-
-        # Apply the threshold on the interpolated mask values.
-        # The threshold is set as 0.0.
-        mask_new = np.zeros(mask_dist[0].shape)
-
-        for i in range(mask_types):
-            mask_dist[i] = np.where(mask_dist[i] > 0., 1, 0)
-        m_index = np.any(np.array(mask_dist)!=0, axis=0)
-        mask_new[m_index] = np.argmax(np.array(mask_dist)[:,m_index],axis=0) + 1
-        return mask_new.astype(mask.dtype)
-
-    else:  # For the binary mask type.
-        mask_dist = np.zeros(mask.shape)
-
-        for z in range(mask.shape[-1]):
-            # The inner distance field to the edge:
-            dist_field_inner = ndi.distance_transform_edt(mask[:,:,z])
-            # The outer distance field to the edge:
-            dist_field_outer = ndi.distance_transform_edt(np.logical_not(mask[:,:,z]))
-            mask_dist[:,:,z] = dist_field_inner - dist_field_outer
-        mask_dist = ndi.zoom(mask_dist, factor, order=1,
-                             mode='grid-mirror', prefilter=True, grid_mode=False)
-        mask_new = np.where(mask_dist > 0., 1,0)
-        return mask_new.astype(mask.dtype)
-
 #@title Load image
 def load_volume(path_volume, im_only=False, squeeze=True, dtype=None, LPS_coor=True):
     """
@@ -258,186 +178,33 @@ def load_volume(path_volume, im_only=False, squeeze=True, dtype=None, LPS_coor=T
     else:
         return volume, spacing, aff
 
-#@title SynthSeg (unet2 only) (w/ isotropic-1mm vol)
-def get_brain_seg(image_arr, spacing, model0):
-
-    def center_crop(volume, centroid=None, size=192):
-        """ center crop a cube with desired size,
-        if the target area is smaller than the desired size, it will be padded with the minimum
-        input:: volume is a 3d-array
-        input:: centroid is center coordinates (x, y, z)
-        output:: cropped cube with desired size ex.(28, 28, 28)
-        """
-        w, h, d = volume.shape
-        r = int(size // 2)
-        if centroid is None:
-            centroid = (w//2, h//2, d//2)
-        x0 = int(centroid[0])
-        y0 = int(centroid[1])
-        z0 = int(centroid[2])
-        if (r < x0 < w-r-1)and(r < y0 < h-r-1)and(r < z0 < d-r-1):
-            return volume[x0-r:x0-r+size, y0-r:y0-r+size, z0-r:z0-r+size]
-        else:
-            volume = np.pad(volume, ((r,r),(r,r),(r,r)), 'minimum')
-            return volume[x0:x0+size, y0:y0+size, z0:z0+size]
-
-    def rescale_volume(volume, new_min=0., new_max=1., min_percentile=0.5, max_percentile=99.5, use_positive_only=False):
-        """This function linearly rescales a volume between new_min and new_max.
-        :param volume: a numpy array
-        :param new_min: (optional) minimum value for the rescaled image.
-        :param new_max: (optional) maximum value for the rescaled image.
-        :param min_percentile: (optional) percentile for estimating robust minimum of volume (float in [0,...100]),
-        where 0 = np.min
-        :param max_percentile: (optional) percentile for estimating robust maximum of volume (float in [0,...100]),
-        where 100 = np.max
-        :param use_positive_only: (optional) whether to use only positive values when estimating the min and max percentile
-        :return: rescaled volume
-        """
-        # select only positive intensities
-        new_volume = volume.copy()
-        intensities = new_volume[new_volume > 0] if use_positive_only else new_volume.flatten()
-
-        # define min and max intensities in original image for normalisation
-        robust_min = np.min(intensities) if min_percentile == 0 else np.percentile(intensities, min_percentile)
-        robust_max = np.max(intensities) if max_percentile == 100 else np.percentile(intensities, max_percentile)
-
-        # trim values outside range
-        new_volume = np.clip(new_volume, robust_min, robust_max)
-
-        # rescale image
-        if robust_min != robust_max:
-            return new_min + (new_volume - robust_min) / (robust_max - robust_min) * (new_max - new_min)
-        else:  # avoid dividing by zero
-            return np.zeros_like(new_volume)
-
-    def center_pad(crop_arr, size):
-        w, h, d = crop_arr.shape
-        x0 = max(0, (size[0] - w) // 2)
-        x1 = max(0, size[0] - w - x0)
-        y0 = max(0, (size[1] - h) // 2)
-        y1 = max(0, size[1] - h - y0)
-        z0 = max(0, size[2] - d)
-        return np.pad(crop_arr, ((x0,x1),(y0,y1),(z0,0)), 'constant')
-
-    # image preprocess
-    target_spacing = np.array([1, 1, 1], dtype=np.float32)
-    image_iso = resize_volume(image_arr, spacing, target_spacing=target_spacing, order=0, dtype='float32')
-    z_pad = 192 - image_iso.shape[2]
-    #print("z_pad =", z_pad)
-    if z_pad >= 0:  # image_iso slices <= 192
-        image_iso_pad = np.pad(image_iso, ((0,0),(0,0),(z_pad,0)), 'minimum')  # pad z
-    else:  # image_iso slices > 192
-        image_iso_pad = image_iso[:, :, -192:]  # crop z
-    image_iso_crop = center_crop(image_iso_pad)
-    del image_iso_pad
-
-    # model prediction
-    seg_iso_crop = model0.serve(rescale_volume(image_iso_crop)[np.newaxis, ::-1, ::-1, :, np.newaxis])
-    synthseg33_array = np.argmax(seg_iso_crop[0, ::-1, ::-1, :, :], axis=3).astype('uint8')
-    # plot_3view_label(image_iso_crop, synthseg33_array, target_spacing)
-    del image_iso_crop
-
-    # seg postprocess
-    if z_pad >= 0:  # image_iso slices <= 192
-        seg_iso = center_pad(synthseg33_array, size=image_iso.shape)[:, :, z_pad:]  # unpad z
-    else:  # image_iso slices > 192
-        seg_iso = center_pad(synthseg33_array, size=image_iso.shape)  # uncrop z
-    #plot_3view_label(image_iso, seg_iso, target_spacing)
-    brain_seg = resize_volume(seg_iso, target_size=image_arr.shape, dtype='uint8')
-    brain_seg = binary_keep_largest(brain_seg > 0)
-    return brain_seg
-
-#@title BET (w/ isotropic(spacing-z, spacing-z, spacing-z) vol)
-def get_BET_brain_mask(image_arr, spacing, bet_iter=1000, pad=32):
-    # resize to isotropic
-    target_spacing = np.array([spacing[2], spacing[2], spacing[2]], dtype=np.float32)
-    print("BET target_spacing =", target_spacing)
-    image_iso = resize_volume(image_arr, spacing, target_spacing=target_spacing, order=0, dtype='int16')
-
-    pv = np.percentile(image_iso.ravel(), 15)
-    print("pad value =", pv)
-    image_iso = np.pad(image_iso, ((pad,pad),(pad,pad),(pad,pad)), 'constant', constant_values=pv)  # minimum, mean
-
-    # nibabel obj
-    affine = np.array([ [target_spacing[0], 0, 0, 0],
-                        [0, target_spacing[1], 0, 0],
-                        [0, 0, target_spacing[2], 0],
-                        [0, 0, 0, 1]], dtype=np.float32)
-    nib_image = nib.Nifti1Image(image_iso[::-1, ::-1, :], affine=affine)  # LPS to RAS orientation
-
-    # BET process
-    bet = BrainExtractor(img=nib_image)
-    bet.run(iterations=bet_iter)
-    brain_mask_iso = bet.compute_mask()[::-1, ::-1, :] > 0  # RAS to LPS orientation
-    brain_mask_iso = brain_mask_iso[pad:-pad, pad:-pad, pad:-pad]
-
-    # back to original spacing
-    brain_mask = resize_volume(brain_mask_iso, target_size=image_arr.shape, dtype='bool')
-    return brain_mask
-
-#@title modify brain mask
-def modify_brain_mask(brain_mask, spacing, verbose=False):
-    # merge and modify brain mask
-    if verbose: print(">>> modify_brain_mask ", end='')
-    brain_mask = binary_dilation(brain_mask, get_struc(8, spacing))
-    if verbose: print(".", end='')
-    brain_mask = binary_fill_holes(brain_mask)
-    if verbose: print(".", end='')
-    brain_mask = binary_erosion(brain_mask, get_struc(14, spacing).sum(axis=2, keepdims=True).astype(bool))  # 12
-    if verbose: print(".", end='')
-    brain_mask = binary_opening(brain_mask, get_struc(14, spacing).sum(axis=2, keepdims=True).astype(bool))
-    if verbose: print(">>>", brain_mask.shape)
-    return brain_mask
-
-#@title threshold segmentation algorithm
-class VesselSegmenter(object):
-    """ ref paper: 2015 Threshold segmentation algorithm for automatic extraction of cerebral vessels from brain magnetic resonance angiography images
-    https://www.sciencedirect.com/science/article/pii/S0165027014004166?via%3Dihub
-    """
-    def keep_brain_img(self, img, mask, spacing, radius_mm=40):
-        r = np.int32(radius_mm // spacing[0])
-        x0, y0 = np.array(mask.shape[:2])//2 - np.array([r, r])
-        seed_area = np.zeros(mask.shape[:2], dtype=bool)
-        disk_mask = disk(r)
-        seed_area[x0:x0+disk_mask.shape[0], y0:y0+disk_mask.shape[1]] = disk_mask
-        seed_area = np.repeat(seed_area[..., np.newaxis], mask.shape[2], axis=-1)
-        mask = mask | seed_area
-        return img * mask
-
-    def otsu_threshold(self, img:np.ndarray) -> np.ndarray:
-        img = img.astype(np.float32)
-        threshold = threshold_otsu(img)
-        return img[img > threshold]
-
-    def distribution(self, x:np.ndarray, mu:float, sigma:float,
-                     stats:str, coefficient:float=1) -> np.ndarray:
-        """ The probability density function (pdf) of distribution is,
-        "gumbel": pdf(x; mu, sigma) = exp(-(x - mu) / sigma - exp(-(x - mu) / sigma)) / sigma
-        "normal": pdf(x; mu, sigma) = exp(-(x - mu)**2 / (2 * sigma**2)) / ((2 * pi)**0.5) / sigma
-        """
-        if stats == "gumbel":
-            return np.exp(-(x - mu) / sigma - np.exp(-(x - mu) / sigma)) / sigma
-        elif stats == "normal":
-            return coefficient * np.exp(-((x - mu)**2) / (2 * sigma**2)) / ((2 * np.pi)**0.5) / sigma
-
-    def threshold_segmentation(self, img:np.ndarray, mask, spacing) -> np.ndarray:
-        img = self.keep_brain_img(img, mask, spacing)
-        foreground = self.otsu_threshold(img).astype(np.uint16)
-
-        mu, sigma = np.mean(foreground), np.std(foreground)
-        x = np.linspace(0, foreground.max(), foreground.max())
-        p_gumbel = self.distribution(x, mu, sigma, stats="gumbel")
-        p_normal = self.distribution(x, mu, sigma, stats="normal", coefficient=95)  # W 25
-        threshold = np.nonzero(np.greater_equal(p_gumbel, p_normal))[0].min()
-        return np.uint16(img > threshold), threshold
-    
-#@title get major vessel seeds for selection
 def get_brain_radius_area(brain_mask, spacing, radius_mm=40):
-    r = np.int32(radius_mm // spacing[0])
-    x0, y0 = np.array(brain_mask.shape[:2])//2 - np.array([r, r])
+    # 確保 brain_mask 是 bool，避免後續位元運算把遮罩變成 int(0/1) 造成 fancy indexing 爆記憶體
+    brain_mask = brain_mask.astype(bool)
+    # disk 是在 XY 平面做半徑限制；避免 r 過大造成負 index/越界
+    spacing_xy = float(spacing[0]) if spacing is not None else 1.0
+    r = int(max(1, round(radius_mm / max(spacing_xy, 1e-6))))
     area = np.zeros(brain_mask.shape[:2], dtype=bool)
     disk_mask = disk(r) > 0
-    area[x0:x0+disk_mask.shape[0], y0:y0+disk_mask.shape[1]] = disk_mask
+
+    cx, cy = (np.array(brain_mask.shape[:2]) // 2).tolist()
+    x0 = cx - disk_mask.shape[0] // 2
+    y0 = cy - disk_mask.shape[1] // 2
+    x1 = x0 + disk_mask.shape[0]
+    y1 = y0 + disk_mask.shape[1]
+
+    # clip 到影像範圍，並同步裁切 disk_mask
+    xx0 = max(0, x0)
+    yy0 = max(0, y0)
+    xx1 = min(area.shape[0], x1)
+    yy1 = min(area.shape[1], y1)
+    if (xx1 > xx0) and (yy1 > yy0):
+        dx0 = xx0 - x0
+        dy0 = yy0 - y0
+        dx1 = dx0 + (xx1 - xx0)
+        dy1 = dy0 + (yy1 - yy0)
+        area[xx0:xx1, yy0:yy1] = disk_mask[dx0:dx1, dy0:dy1]
+
     area = np.repeat(area[..., np.newaxis], brain_mask.shape[2], axis=-1)
     return brain_mask & area
 
@@ -446,176 +213,64 @@ def get_vessel_seed(candidates, mask=None, spacing=(1,1,1)):
     candidates_mask = candidates > 0
     if mask is not None:  # keep brain region
         candidates_mask = candidates > 0
-        brain_bottom_idx = np.where(np.any(mask > 0, axis=(0,1)))[0][0]
-        candidates_mask[:,:,:brain_bottom_idx] = False
+        z_idx = np.where(np.any(mask > 0, axis=(0,1)))[0]
+        if z_idx.size > 0:
+            brain_bottom_idx = int(z_idx[0])
+            candidates_mask[:, :, :brain_bottom_idx] = False
+        else:
+            brain_bottom_idx = None
 
     # make major seeds
     major_seed_mask = binary_erosion(candidates_mask.copy(), get_struc(2.5, spacing))  # 2.5, 3.0
     area_mask = get_brain_radius_area(mask, spacing, radius_mm=45)
-    major_seed_mask = major_seed_mask & area_mask
+    major_seed_mask = (major_seed_mask & area_mask).astype(bool)
 
     # make center seeds
     center_seed_mask = candidates_mask.copy()
     if mask is not None:  # keep brain region
-        upper1of3_brain_height = (candidates_mask.shape[2] - brain_bottom_idx) // 3
-        center_seed_mask[:, :, :brain_bottom_idx + upper1of3_brain_height] = False
-        center_seed_mask[:, :, -upper1of3_brain_height:] = False
+        if brain_bottom_idx is not None:
+            upper1of3_brain_height = (candidates_mask.shape[2] - brain_bottom_idx) // 3
+            center_seed_mask[:, :, :brain_bottom_idx + upper1of3_brain_height] = False
+            center_seed_mask[:, :, -upper1of3_brain_height:] = False
     center_seed_mask = binary_erosion(center_seed_mask, get_struc(1.5, spacing))
     area_mask = get_brain_radius_area(mask, spacing, radius_mm=20)
-    center_seed_mask = center_seed_mask & area_mask
+    center_seed_mask = (center_seed_mask & area_mask).astype(bool)
 
     # make upper seeds
     upper_seed_mask = candidates_mask.copy()
     if mask is not None:  # keep brain region
-        upper1of3_brain_height = (candidates_mask.shape[2] - brain_bottom_idx) // 3
-        upper_seed_mask[:, :, :brain_bottom_idx + upper1of3_brain_height*2] = False
+        if brain_bottom_idx is not None:
+            upper1of3_brain_height = (candidates_mask.shape[2] - brain_bottom_idx) // 3
+            upper_seed_mask[:, :, :brain_bottom_idx + upper1of3_brain_height*2] = False
     upper_seed_mask = binary_erosion(upper_seed_mask, get_struc(1.5, spacing))
     area_mask = get_brain_radius_area(mask, spacing, radius_mm=40)
-    upper_seed_mask = upper_seed_mask & area_mask
-    return major_seed_mask | center_seed_mask | upper_seed_mask
-
-#@title Sliding_window_inference help functions
-# https://github.com/NVIDIA/DeepLearningExamples/blob/master/TensorFlow2/Segmentation/nnUNet/models/sliding_window.py
-
-def get_window_slices(image_size, roi_size, overlap, strategy):
-    dim_starts = []
-    for image_x, roi_x in zip(image_size, roi_size):
-        interval = roi_x if roi_x == image_x else int(roi_x * (1 - overlap))
-        starts = list(range(0, image_x - roi_x + 1, interval))
-        if strategy == "overlap_inside" and starts[-1] + roi_x < image_x:
-            starts.append(image_x - roi_x)
-        dim_starts.append(starts)
-    slices = [(starts + (0,), roi_size + (-1,)) for starts in itertools.product(*dim_starts)]
-    batched_window_slices = [((0,) + start, (1,) + roi_size) for start, roi_size in slices]
-    return batched_window_slices
-
-@tf.function
-def gaussian_kernel(roi_size, sigma):
-    gauss = signal.windows.gaussian(roi_size[0], std=sigma * roi_size[0])
-    for s in roi_size[1:]:
-        gauss = np.outer(gauss, signal.windows.gaussian(s, std=sigma * s))
-    gauss = np.reshape(gauss, roi_size)
-    gauss = np.power(gauss, 1 / len(roi_size))
-    gauss /= gauss.max()
-    return tf.convert_to_tensor(gauss, dtype=tf.float32)
-
-def get_importance_kernel(roi_size, blend_mode, sigma):
-    if blend_mode == "constant":
-        return tf.ones(roi_size, dtype=tf.float32)
-    elif blend_mode == "gaussian":
-        return gaussian_kernel(roi_size, sigma)
-    else:
-        raise ValueError(f'Invalid blend mode: {blend_mode}. Use either "constant" or "gaussian".')
-    
-@tf.function
-def run_model1(x, model1, importance_map, **kwargs):
-    pred1 = model1.serve(x)  # segment conf.
-    return pred1 * importance_map
-
-#@title model predict vessel
-def predict_vessel(image_arr, brain_mask,
-                   model1, patch_size=(64, 64, 32), sigma=0.125, n_class=1, overlap=0.5, conf_th=0.1,
-                   verbose=False):
-
-    def sliding_window_inference1(inputs, roi_size, model, overlap, n_class, importance_map, strategy="overlap_inside", mask=None, **kwargs):
-        image_size = tuple(inputs.shape[1:-1])
-        roi_size = tuple(roi_size)
-        # Padding to make sure that the image size is at least roi size
-        padded_image_size = tuple(max(image_size[i], roi_size[i]) for i in range(3))
-        padding_size = [image_x - input_x for image_x, input_x in zip(image_size, padded_image_size)]
-        paddings = [[0, 0]] + [[x // 2, x - x // 2] for x in padding_size] + [[0, 0]]
-        input_padded = tf.pad(inputs, paddings)
-        if mask is not None:
-            mask_padded = tf.pad(tf.convert_to_tensor(mask, dtype=tf.bool), paddings)
-
-        output_shape = (1, *padded_image_size, n_class)
-        output_sum = tf.zeros(output_shape, dtype=tf.float32)
-        output_weight_sum = tf.zeros(output_shape, dtype=tf.float32)
-        window_slices = get_window_slices(padded_image_size, roi_size, overlap, strategy)
-
-        for i, window_slice in enumerate(window_slices):
-            if (mask is None) or ((mask is not None)and(tf.math.reduce_any(tf.slice(mask_padded, begin=window_slice[0], size=window_slice[1])))):
-                window = tf.slice(input_padded, begin=window_slice[0], size=window_slice[1])
-                pred = run_model1(window, model, importance_map, **kwargs)
-                padding = [
-                    [start, output_size - (start + size)] for start, size, output_size in zip(*window_slice, output_shape)
-                ]
-                padding = padding[:-1] + [[0, 0]]
-                output_sum = output_sum + tf.pad(pred, padding)
-                output_weight_sum = output_weight_sum + tf.pad(importance_map, padding)
-            if verbose:
-                if i % 100 == 0: print('.', end='')
-
-        output = output_sum / tf.clip_by_value(output_weight_sum, 1, 256)
-        crop_slice = [slice(pad[0], pad[0] + input_x) for pad, input_x in zip(paddings, inputs.shape[:-1])]
-        return output[crop_slice]
-
-    # prepare importance_map
-    if verbose: print(">>> predict_vessel ", end='')
-    image_arr = custom_normalize_1(image_arr)
-
-    importance_kernel = get_importance_kernel(patch_size, blend_mode="gaussian", sigma=sigma)
-    importance_map = tf.tile(tf.reshape(importance_kernel, shape=[1, *patch_size, 1]), multiples=[1, 1, 1, 1, n_class],)
-    # sliding_window_inference
-    vessel_conf = sliding_window_inference1(inputs=image_arr[np.newaxis,:,:,:,np.newaxis],
-                                            roi_size=patch_size, model=model1, overlap=overlap,
-                                            n_class=n_class, importance_map=importance_map,
-                                            mask=brain_mask[np.newaxis,:,:,:,np.newaxis])
-    vessel_conf = vessel_conf[0,:,:,:,0].numpy()
-
-    if verbose: print(">>>", vessel_conf.shape)
-    return vessel_conf > conf_th
+    upper_seed_mask = (upper_seed_mask & area_mask).astype(bool)
+    return (major_seed_mask | center_seed_mask | upper_seed_mask).astype(bool)
 
 #@title combine two vessel results
-def combine_two_vessels(vessel_threshold, vessel_frangi, seed_mask=None, brain_mask=None):
+def combine_vessel_brain(vessel_threshold, seed_mask=None, brain_mask=None):
+    vessel_threshold = (vessel_threshold > 0)
     if brain_mask is not None:  # keep brain region
-        brain_bottom_idx = np.where(np.any(brain_mask > 0, axis=(0,1)))[0][0]
-        vessel_threshold[:,:,:brain_bottom_idx] = False  # cut off below brain area
-        vessel_frangi[~brain_mask] = 0  # remove out-brain frangi
+        z_idx = np.where(np.any(brain_mask > 0, axis=(0,1)))[0]
+        if z_idx.size > 0:
+            brain_bottom_idx = int(z_idx[0])
+            vessel_threshold[:, :, :brain_bottom_idx] = False  # cut off below brain area
 
-    vessel_mask = (vessel_threshold > 0) | (vessel_frangi > 0)
+    vessel_mask = vessel_threshold > 0
     label_map = label(vessel_mask)
     if seed_mask is None:
         vessel_mask = label_map > 0
     else:  # select vessels via seeds
+        seed_mask = seed_mask.astype(bool)
+        if seed_mask.shape != label_map.shape:
+            raise ValueError(f"seed_mask shape {seed_mask.shape} != label_map shape {label_map.shape}. "
+                             f"請確認 pred/brain 都在同一個 data_translate 座標系下再做種子挑選。")
         lbs = np.unique(label_map[seed_mask])
+        lbs = [lb for lb in lbs if lb != 0]  # drop zero
         vessel_mask = np.isin(label_map, lbs)
 
     vessel_mask = remove_small_objects(vessel_mask, min_size=500)
     return vessel_mask
-
-#@title get_vessel_skeleton_labels
-def get_vessel_skeleton_labels(vessel_mask, spacing):
-    target_thickness = spacing[0]
-    Z_FAC = spacing[2] / target_thickness  # Sampling factor in Z direction
-    vessel_sr = mask_interpolation(vessel_mask, factor=(1,1,Z_FAC)).astype(bool)
-    # get skeleton diameter
-    distance_sr = ndi.distance_transform_edt(vessel_sr)  # px
-    skeleton_sr = skeletonize(vessel_sr > 0) > 0
-    # plot pseudo_vessel
-    pseudo_vessel_sr = np.zeros_like(skeleton_sr, dtype=bool)
-    for center in np.stack(np.where(skeleton_sr), axis=-1):
-        r = distance_sr[center[0], center[1], center[2]] + 1  # float px + 1
-        d = ball(r).shape[0]
-        x0 = int(center[0] - (d // 2))
-        y0 = int(center[1] - (d // 2))
-        z0 = int(center[2] - (d // 2))
-        try:
-            pseudo_vessel_sr[x0:x0 + d, y0:y0 + d, z0:z0 + d] = pseudo_vessel_sr[x0:x0 + d, y0:y0 + d, z0:z0 + d] | ball(r)
-        except:
-            pass
-    # diff vessel
-    diff_vessel_sr = (vessel_sr.astype('int8') - pseudo_vessel_sr.astype('int8')) > 0
-    # back to original space
-    pseudo_vessel = resize_volume(pseudo_vessel_sr, target_size=vessel_mask.shape, dtype='uint8')
-    diameter = resize_volume(distance_sr, target_size=vessel_mask.shape, dtype='float32') * target_thickness * 2
-    skeleton = skeletonize(pseudo_vessel > 0) > 0
-    diff_vessel = resize_volume(diff_vessel_sr, target_size=vessel_mask.shape, dtype='uint8')
-    # return diameter * skeleton.astype('float32'), diff_vessel
-
-    # merge labels
-    skeleton_labels = np.clip(expand_labels(skeleton.astype('uint8'), 1) + (diff_vessel * 2), 0, 2)
-    return skeleton_labels
 
 #@title predict vessel_16labels (w/ isotropic 0.8mm vol)
 def predict_vessel_16labels(vessel_mask, model3, spacing, post_proc=True, min_size=3, verbose=False):
@@ -717,252 +372,16 @@ def modify_vessel_16labels(vessel_16labels, spacing):
     new_vessel_mask = remove_small_objects(new_vessel_mask, min_size=500)
 
     return new_vessel_mask.astype('uint8') * vessel_16labels, new_vessel_mask
-
-@tf.function
-def run_model2(x, model2, importance_map, **kwargs):
-    x = tf.reshape(x, (-1, 32, 32, 16, 1))
-    pred1 = model2.serve(x)  # segment conf.
-    return pred1 * importance_map
-
-@tf.function
-def run_model_batch(x, model, importance_map):
-    """批量推論並乘以重要性權重"""
-    pred = model.serve(x)  # (B, D, H, W, n_class)
-    return pred * importance_map  # 自動廣播到 batch 維
-
-#@title model predict aneurysm
-def predict_aneurysm(image_arr, brain_mask, vessel_16labels, spacing,
-                     model2, patch_size=(32, 32, 16), sigma=0.125, n_class=1, overlap=0.75,
-                     conf_th=0.1, min_diameter=1, top_k=4, obj_th=0.67, verbose=False):
-
-    # resampling
-    target_spacing = (spacing[0], spacing[1], spacing[0])  # isotropic
-    image_iso = resize_volume(image_arr, spacing=spacing, target_spacing=target_spacing, dtype='float32')
-    vessel_iso = resize_volume(vessel_16labels, target_size=image_iso.shape, dtype='bool')
-
-    def sliding_window_inference2(inputs, roi_size, model, overlap, n_class, importance_map, strategy="overlap_inside", mask=None, **kwargs):
-        image_size = tuple(inputs.shape[1:-1])
-        roi_size = tuple(roi_size)
-        # Padding to make sure that the image size is at least roi size
-        padded_image_size = tuple(max(image_size[i], roi_size[i]) for i in range(3))
-        padding_size = [image_x - input_x for image_x, input_x in zip(image_size, padded_image_size)]
-        paddings = [[0, 0]] + [[x // 2, x - x // 2] for x in padding_size] + [[0, 0]]
-        input_padded = tf.pad(inputs, paddings)
-        if mask is not None:
-            mask_padded = tf.pad(tf.convert_to_tensor(mask, dtype=tf.bool), paddings)
-
-        output_shape = (1, *padded_image_size, n_class)
-        output_sum = tf.zeros(output_shape, dtype=tf.float32)
-        output_weight_sum = tf.ones(output_shape, dtype=tf.float32)
-        window_slices = get_window_slices(padded_image_size, roi_size, overlap, strategy)
-
-        for i, window_slice in enumerate(window_slices):
-            if (mask is None) or ((mask is not None)and(tf.math.reduce_any(tf.slice(mask_padded, begin=window_slice[0], size=window_slice[1])))):
-                window = tf.slice(input_padded, begin=window_slice[0], size=window_slice[1])
-                pred = run_model2(window, model, importance_map, **kwargs)
-                padding = [
-                    [start, output_size - (start + size)] for start, size, output_size in zip(*window_slice, output_shape)
-                ]
-                padding = padding[:-1] + [[0, 0]]
-                output_sum = output_sum + tf.pad(pred, padding)
-                output_weight_sum = output_weight_sum + tf.pad(importance_map, padding)
-            if verbose:
-                if i % 2000 == 0: print('.', end='')
-
-        # output = output_sum / tf.clip_by_value(output_weight_sum, 1, 256)
-        output = output_sum / output_weight_sum
-        crop_slice = [slice(pad[0], pad[0] + input_x) for pad, input_x in zip(paddings, inputs.shape[:-1])]
-        return output[crop_slice]
-
-    # prepare importance_map
-    if verbose: print(">>> predict_aneurysm ", end='')
-    importance_kernel = get_importance_kernel(patch_size, blend_mode="gaussian", sigma=sigma)
-    importance_map = tf.tile(tf.reshape(importance_kernel, shape=[1, *patch_size, 1]), multiples=[1, 1, 1, 1, n_class],)
-    # sliding_window_inference
-    pred_prob_map = sliding_window_inference2(inputs=custom_normalize_1(image_iso)[np.newaxis,:,:,:,np.newaxis],
-                                              roi_size=patch_size, model=model2, overlap=overlap,
-                                              n_class=n_class, importance_map=importance_map,
-                                              mask=vessel_iso[np.newaxis,:,:,:,np.newaxis])
-    pred_prob_map = pred_prob_map[0,:,:,:,0].numpy() * vessel_iso
-
-    # back to original spacing
-    pred_prob_map = resize_volume(pred_prob_map, target_size=image_arr.shape, dtype='float32')
-
-    # object_analysis
-    pred_label = label(pred_prob_map > conf_th)
-    # pred_label measurement
-    props = regionprops_table(pred_label, pred_prob_map, properties=('label', 'bbox', 'intensity_max', 'intensity_mean'))
-    df_pred = pd.DataFrame({'ori_Pred_label':props['label'],
-                            'Pred_diameter':((props['bbox-3']-props['bbox-0'])*spacing[0] + (props['bbox-4']-props['bbox-1'])*spacing[1]) / 2,
-                            'Pred_max':props['intensity_max'],
-                            'Pred_mean':props['intensity_mean'],})
-    # sort and false-positive filtering
-    df_pred = df_pred.sort_values(by='Pred_max', ascending=False)
-    df_pred = df_pred[df_pred['Pred_diameter'] >= min_diameter]  # object size filter
-    if top_k > 0: df_pred = df_pred[:top_k]  # top_k filter
-    df_pred = df_pred[df_pred['Pred_max'] >= obj_th]  # object filter
-    # remap pred_label array
-    df_pred['Pred_label'] = np.arange(1, df_pred.shape[0]+1)
-    new_pred_label = np.zeros_like(pred_label)
-    for k, v in zip(df_pred['ori_Pred_label'].values, df_pred['Pred_label'].values):
-        new_pred_label[pred_label==k] = v
-
-    # get object location
-#     if vessel_16labels.max() > 7:  # QC of vessel_16labels
-    for idx in df_pred.index:
-        masked_veseel = vessel_16labels[new_pred_label == df_pred.loc[idx, 'Pred_label']]
-        unique, counts = np.unique(masked_veseel[masked_veseel > 0], return_counts=True)
-        df_pred.loc[idx, 'vessel_16label'] = unique[np.argmax(counts)]
-
-    if verbose: print(">>>", new_pred_label.shape)
-    return pred_prob_map, df_pred, new_pred_label
-
-
-def predict_aneurysm_best(image_arr, brain_mask, vessel_16labels, spacing,
-                          model2, patch_size=(32,32,16), sigma=0.125, n_class=1,
-                          overlap=0.75, conf_th=0.1, min_diameter=1, top_k=4,
-                          obj_th=0.67, batch_size=300, verbose=False):
-    """GPU 高效 + 安全 padding 版本"""
-
-    # 1. === 預處理 ===
-    target_spacing = (spacing[0], spacing[1], spacing[0])
-    image_iso = resize_volume(image_arr, spacing=spacing,
-                              target_spacing=target_spacing, dtype='float32')
-    vessel_iso = resize_volume(vessel_16labels, target_size=image_iso.shape, dtype='bool')
-
-    if verbose:
-        print(f">>> image_iso: {image_iso.shape}, vessel_iso: {vessel_iso.shape}")
-
-    # 2. === sliding window inference 函數 ===
-    def sliding_window_inference_safe(inputs, roi_size, model, overlap, n_class,
-                                      importance_map, mask=None, batch_size=300):
-        image_size = tuple(inputs.shape[1:-1])  # (D,H,W)
-        roi_size = tuple(roi_size)
-
-        # === Padding ===
-        padded_image_size = tuple(max(image_size[i], roi_size[i]) for i in range(3))
-        padding_size = [padded_image_size[i] - image_size[i] for i in range(3)]
-        paddings = [[0,0]] + [[x//2, x-x//2] for x in padding_size] + [[0,0]]
-        input_padded = tf.pad(inputs, paddings)
-
-        if mask is not None:
-            mask_padded = tf.pad(tf.convert_to_tensor(mask, dtype=tf.bool), paddings)
-        else:
-            mask_padded = tf.ones_like(input_padded, dtype=tf.bool)
-
-        output_shape = tf.concat([[1], tf.constant(padded_image_size, tf.int32), [n_class]], axis=0)
-        output_sum = tf.zeros(output_shape, dtype=tf.float32)
-        #output_weight_sum = tf.zeros(output_shape, dtype=tf.float32)
-        output_weight_sum = tf.ones(output_shape, dtype=tf.float32) #上面才是正確，但君彥版本用這個
-
-        window_slices = get_window_slices(padded_image_size, roi_size, overlap, strategy="overlap_inside")
-
-        # 過濾掉沒有mask覆蓋的patch
-        valid_slices = [(s, sz) for s, sz in window_slices
-                        if tf.reduce_any(tf.slice(mask_padded, begin=s, size=sz))]
-
-        batch_inputs = []
-        batch_indices = []
-
-        for i, (start, size) in enumerate(valid_slices):
-            patch = tf.slice(input_padded, begin=start, size=size)[0]
-            batch_inputs.append(patch)
-            batch_indices.append((start, size))
-
-            # 滿批或最後一次 -> 推論
-            if len(batch_inputs) == batch_size or i == len(valid_slices)-1:
-                batch_tensor = tf.stack(batch_inputs, axis=0)
-                preds = model.serve(batch_tensor) * importance_map  # (B,D,H,W,n_class)
-
-                # === 向量化累加 ===
-                for j, (s, sz) in enumerate(batch_indices):
-                    pred = preds[j]  # (D,H,W,n_class)
-
-                    # 安全 padding 計算
-                    padding = []
-                    for dim in range(5):  # (B,D,H,W,C)
-                        if dim == 0 or dim == 4:
-                            padding.append([0,0])
-                        else:
-                            pad_before = s[dim]
-                            pad_after = int(output_shape[dim]) - (s[dim] + sz[dim])
-                            pad_after = max(pad_after, 0)  # 防止負數
-                            padding.append([pad_before, pad_after])
-
-                    pred_padded = tf.pad(pred[tf.newaxis], padding)
-                    weight_padded = tf.pad(importance_map, padding)
-
-                    output_sum += pred_padded
-                    output_weight_sum += weight_padded
-
-                batch_inputs = []
-                batch_indices = []
-
-        # 安全除零
-        output = output_sum / tf.maximum(output_weight_sum, 1e-8)
-
-        # Crop 回原圖大小
-        crop_slice = [slice(pad[0], pad[0]+image_size[i])
-                      for i, pad in enumerate(paddings[1:-1])]
-        return output[(slice(0,1), *crop_slice, slice(0,n_class))]
-
-    # 3. === importance map ===
-    importance_kernel = get_importance_kernel(patch_size, blend_mode="gaussian", sigma=sigma)
-    importance_map = tf.tile(tf.reshape(importance_kernel, shape=[1,*patch_size,1]),
-                             [1,1,1,1,n_class])
-
-    # 4. === sliding window inference ===
-    pred_prob_map = sliding_window_inference_safe(
-        inputs=custom_normalize_1(image_iso)[np.newaxis,...,np.newaxis],
-        roi_size=patch_size,
-        model=model2,
-        overlap=overlap,
-        n_class=n_class,
-        importance_map=importance_map,
-        mask=vessel_iso[np.newaxis,...,np.newaxis],
-        batch_size=batch_size
-    )
-
-    pred_prob_map = pred_prob_map[0,...,0].numpy() * vessel_iso
-    pred_prob_map = resize_volume(pred_prob_map, target_size=image_arr.shape, dtype='float32')
-
-    # 5. === Post-processing ===
-    pred_label = label(pred_prob_map > conf_th)
-    props = regionprops_table(pred_label, pred_prob_map,
-                              properties=('label', 'bbox', 'intensity_max', 'intensity_mean'))
-    df_pred = pd.DataFrame({
-        'ori_Pred_label': props['label'],
-        'Pred_diameter': ((props['bbox-3'] - props['bbox-0']) * spacing[0] +
-                          (props['bbox-4'] - props['bbox-1']) * spacing[1]) / 2,
-        'Pred_max': props['intensity_max'],
-        'Pred_mean': props['intensity_mean'],
-    })
-
-    df_pred = df_pred[df_pred['Pred_diameter'] >= min_diameter]
-    df_pred = df_pred.sort_values(by='Pred_max', ascending=False)
-    if top_k > 0:
-        df_pred = df_pred[:top_k]
-    df_pred = df_pred[df_pred['Pred_max'] >= obj_th]
-
-    df_pred['Pred_label'] = np.arange(1, df_pred.shape[0]+1)
-    new_pred_label = np.zeros_like(pred_label)
-    for k, v in zip(df_pred['ori_Pred_label'].values, df_pred['Pred_label'].values):
-        new_pred_label[pred_label == k] = v
-
-    for idx in df_pred.index:
-        masked_vessel = vessel_16labels[new_pred_label == df_pred.loc[idx, 'Pred_label']]
-        unique, counts = np.unique(masked_vessel[masked_vessel > 0], return_counts=True)
-        df_pred.loc[idx, 'vessel_16label'] = unique[np.argmax(counts)] if len(unique)>0 else -1
-
-    if verbose:
-        print(">>> Done.", new_pred_label.shape)
-
-    return pred_prob_map, df_pred, new_pred_label
-
-
+ 
 #@title save nifti，這邊是用我的
-def save_nii(path_process, brain_mask, pred_vessel, vessel_16labels, pred_label, pred_prob_map, out_dir='test_label_out', verbose=False):
+def save_nii_brain(path_process, image_arr, brain_arr, out_dir='test_label_out', verbose=False):
     ## load original image
+    #建立分別放正規化影像與vessel的資料夾
+    if not os.path.isdir(os.path.join(out_dir, 'Image')):
+        os.mkdir(os.path.join(out_dir, 'Image'))
+    if not os.path.isdir(os.path.join(out_dir, 'Ones')):
+        os.mkdir(os.path.join(out_dir, 'Ones'))
+
     img = nib.load(os.path.join(path_process, 'MRA_BRAIN.nii.gz'))
     img = nib.as_closest_canonical(img)  # to RAS space
     aff = img.affine
@@ -972,65 +391,20 @@ def save_nii(path_process, brain_mask, pred_vessel, vessel_16labels, pred_label,
     original_size = tuple(img.header.get_data_shape())
     #nib.save(img, f"{out_dir}/image.nii.gz")
     #print("[save] --->", f"{out_dir}/image.nii.gz")
-    if verbose:
-        image_arr = img.get_fdata().astype('int16')
-        print(f"shape={shape} spacing={spacing}  {image_arr.dtype}:{image_arr.min()}-{image_arr.max()}")
-        print("affine matrix =\n", aff)
 
-    # Make sure the dimensions are the same as the original image
-    if brain_mask.shape != original_size:
-        brain_mask = resize_volume(brain_mask, target_size=original_size, dtype='uint8')
-    if pred_vessel.shape != original_size:
-        pred_vessel = resize_volume(pred_vessel, target_size=original_size, dtype='uint8')        
-    if vessel_16labels.shape != original_size:
-        vessel_16labels = resize_volume(vessel_16labels, target_size=original_size, dtype='uint8')
-    if pred_label is not None:
-        if pred_label.shape != original_size:
-            pred_label = resize_volume(pred_label, target_size=original_size, dtype='uint8')
-    if pred_prob_map is not None:
-        if pred_prob_map.shape != original_size:
-            pred_prob_map = resize_volume(pred_prob_map, target_size=original_size, dtype='uint8')
+     #影像直接複製
+    if not os.path.isfile(os.path.join(out_dir, 'Image', 'DeepAneurysm_00001_0000.nii.gz')):
+        shutil.copy(os.path.join(path_process, 'MRA_BRAIN.nii.gz'), os.path.join(out_dir, 'Image', 'DeepAneurysm_00001_0000.nii.gz'))
 
-    ## brain_mask
-    brain_mask = brain_mask[::-1, ::-1, :].astype('uint8')  # LPS to RAS orientation
-    x = nib.nifti1.Nifti1Image(brain_mask, affine=aff)
-    nib.save(x, f"{out_dir}/brain_mask.nii.gz")
-    print("[save] --->", f"{out_dir}/brain_mask.nii.gz")
-
-    ## pred_vessel
-    # pred_vessel = pred_vessel[::-1, ::-1, :].astype('uint8')  # LPS to RAS orientation
-    # x = nib.nifti1.Nifti1Image(pred_vessel, affine=aff)
-    # nib.save(x, f"{out_dir}/pred_vessel_mask.nii.gz")
-    # print("[save] --->", f"{out_dir}/pred_vessel_mask.nii.gz")
-
-    ## pred_vessel
-    # build NifTi1 image
-    pred_vessel = pred_vessel[::-1, ::-1, :].astype('uint8')  # LPS to RAS orientation
-    x = nib.nifti1.Nifti1Image(pred_vessel, affine=aff)
-    nib.save(x, f"{out_dir}/Vessel.nii.gz")
-    print("[save] --->", f"{out_dir}/Vessel.nii.gz")
-
-    # pred_vessel_16labels
-    vessel_16labels = vessel_16labels[::-1, ::-1, :].astype('uint8')  # LPS to RAS orientation
-    x = nib.nifti1.Nifti1Image(vessel_16labels, affine=aff)
-    nib.save(x, f"{out_dir}/Vessel_16.nii.gz")
-    print("[save] --->", f"{out_dir}/Vessel_16.nii.gz")
-
-    ## pred_label
-    pred_label = pred_label[::-1, ::-1, :].astype('uint8')  # LPS to RAS orientation
-    x = nib.nifti1.Nifti1Image(pred_label, affine=aff)
-    nib.save(x, f"{out_dir}/Pred.nii.gz")
-    print("[save] --->", f"{out_dir}/Pred.nii.gz")
-    
-    #存出predict map
-    pred_prob_map = pred_prob_map[::-1, ::-1, :]  # LPS to RAS orientation
-    x = nib.nifti1.Nifti1Image(pred_prob_map, affine=aff)
-    nib.save(x, f"{out_dir}/Prob.nii.gz")
-    print("[save] --->", f"{out_dir}/Prob.nii.gz")
+    # build NifTi1 brain
+    brain_arr = brain_arr[::-1, ::-1, :]  # LPS to RAS orientation
+    x = nib.nifti1.Nifti1Image(brain_arr, affine=aff, header=hdr)
+    nib.save(x, os.path.join(out_dir, 'Ones', 'DeepAneurysm_00001_0000.nii.gz'))
+    print("[save] --->", os.path.join(out_dir, 'Ones', 'DeepAneurysm_00001_0000.nii.gz'))
     return 
 
 #@title save nifti，這邊是用我的
-def save_nii_preprocess(path_process, image_arr, pred_vessel, vessel_16labels, out_dir='test_label_out', verbose=False):
+def save_nii_vessel(path_process, image_arr, pred_vessel, vessel_16labels, out_dir='test_label_out', verbose=False):
     ## load original image
     #建立分別放正規化影像與vessel的資料夾
     if not os.path.isdir(os.path.join(out_dir, 'Normalized_Image')):
@@ -1065,12 +439,12 @@ def save_nii_preprocess(path_process, image_arr, pred_vessel, vessel_16labels, o
     nib.save(x, os.path.join(out_dir, 'Normalized_Image', 'DeepAneurysm_00001_0000.nii.gz'))
     print("[save] --->", os.path.join(out_dir, 'Normalized_Image', 'DeepAneurysm_00001_0000.nii.gz'))    
 
-    ## pred_vessel
+    # pred_vessel
     # build NifTi1 image
     pred_vessel = pred_vessel[::-1, ::-1, :].astype('uint8')  # LPS to RAS orientation
     x = nib.nifti1.Nifti1Image(pred_vessel, affine=aff, header=hdr)
-    nib.save(x, os.path.join(out_dir, 'Vessel', 'DeepAneurysm_00001_0000.nii.gz'))
-    print("[save] --->", os.path.join(out_dir, 'Vessel', 'DeepAneurysm_00001_0000.nii.gz'))
+    # nib.save(x, os.path.join(out_dir, 'Vessel', 'DeepAneurysm_00001_0000.nii.gz'))
+    # print("[save] --->", os.path.join(out_dir, 'Vessel', 'DeepAneurysm_00001_0000.nii.gz'))
     nib.save(x, f"{out_dir}/Vessel.nii.gz")
     print("[save] --->", f"{out_dir}/Vessel.nii.gz")
 
@@ -1138,7 +512,7 @@ def nii_img_replace(data, new_img):
 
 #"主程式"
 #model_predict_aneurysm(path_code, path_process, case_name, path_log, gpu_n)
-def model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name, path_log, gpu_n):
+def model_predict_aneurysm(path_code, path_process, path_brain_model, path_vessel_model, path_aneurysm_model, case_name, path_log, gpu_n):
     path_model = os.path.join(path_code, 'model_weights')
 
     #以log紀錄資訊，先建置log
@@ -1204,25 +578,6 @@ def model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name
             # 1 load image
             image_arr, spacing, _ = load_volume(MRA_BRAIN_file, dtype='int16')
 
-            # 1.5 load synthseg model
-            #@title load SynthSeg base model
-            #model_root = '/content/gdrive/Shareddrives/2024_雙和_Aneurysm/code/SynthSeg_inference'  # google drive
-            model_root = os.path.join(path_model, 'SynthSeg_inference')
-            # model_root = 'SynthSeg_inference'  # server
-            # load model0 (unet2)
-            model0 = tf.saved_model.load(f"{model_root}/saved_model/net_unet2")
-            model0.trainable = False
-            model0.jit_compile = True
-
-            #@title load vessel seg model
-            #model_root = '/content/gdrive/Shareddrives/2024_雙和_Aneurysm/model/dataV2-brain_vessel-PosSample-ResUnet'  # google drive
-            model_root = os.path.join(path_model, 'dataV2-brain_vessel-PosSample-ResUnet')
-            # model_root = '../model/dataV2-brain_vessel-PosSample-ResUnet'  # server
-            model_name = "MP-CustomNorm1-vessel_sampling_pos.9_64x64x32_b1x48-ResUnet_F32L4BN_mish_1ch-BCE_dice_ema" #我有改短名稱
-            model1 = tf.saved_model.load(f"{model_root}/{model_name}/best_saved_model")
-            model1.trainable = False
-            model1.jit_compile = True
-
             #@title load vessel 16labels model
             #model_root = '/content/gdrive/Shareddrives/2024_雙和_Aneurysm/model/dataV2-Vessel_16label-ResUnet'  # google drive
             model_root = os.path.join(path_model, 'dataV2-Vessel_16label-ResUnet')
@@ -1232,47 +587,137 @@ def model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name
             model3.trainable = False
             model3.jit_compile = True
 
-            #@title load aneurysm seg model
-            #model_root = '/content/gdrive/Shareddrives/2024_雙和_Aneurysm/model/aneurysm_seg_model_v3-restart'  # google drive
-            model_root = os.path.join(path_model, 'aneurysm_seg_model_v3-restart')
-            # model_root = "../model/aneurysm_seg_model_v3-restart"  # server
-            model_name = "MP-FEMHv3_SHHv3_P3_iso-b8-FCresunet32-px_size_sw-Adam1E4_ema"  # iso
-            model2 = tf.saved_model.load(f"{model_root}/{model_name}/best_saved_model")
-            model2.trainable = False
-            model2.jit_compile = True
+            # 2 Get brain mask，改用nnU-Net的model
+            #先複製檔案過去跟製作全是1的同尺寸mask
+            ones_img = np.ones_like(image_arr, dtype=np.int16)
+            save_nii_brain(path_process, image_arr, ones_img, out_dir=path_process)
 
-            # 2 Get brain mask，先全照君彥pipeline，來不及拉!!!
-            brain_seg = get_brain_seg(image_arr, spacing, model0)
-            brain_bottom_idx = np.where(np.any(brain_seg > 0, axis=(0,1)))[0][0]
-            bet_brain_mask = np.zeros_like(image_arr, dtype=bool)
-            bet_brain_mask[:,:,brain_bottom_idx:] = get_BET_brain_mask(image_arr[:,:,brain_bottom_idx:], spacing, bet_iter=1000)
-            brain_mask = modify_brain_mask((brain_seg > 0)|(bet_brain_mask), spacing, verbose=verbose)
-            del brain_seg, bet_brain_mask
+            #先建立資料夾
+            path_nnunet = os.path.join(path_process, 'nnUNet')
+            path_img = os.path.join(path_process, 'Image')
+            path_ones = os.path.join(path_process, 'Ones')
+            path_brain = os.path.join(path_process, 'Brain')
+            path_vessel = os.path.join(path_process, 'Vessel')
+            if not os.path.isdir(path_brain):
+                os.mkdir(path_brain)
+            if not os.path.isdir(path_vessel):
+                os.mkdir(path_vessel)
+
+            start = time.time()
+            predict_from_raw_data(path_img,
+                                  path_ones,
+                                  path_brain,
+                                  path_brain_model,
+                                  (0,),
+                                  0.25,
+                                  use_gaussian=True,
+                                  use_mirroring=False,
+                                  perform_everything_on_gpu=True,
+                                  verbose=True,
+                                  save_probabilities=False,
+                                  overwrite=False,
+                                  checkpoint_name='checkpoint_best.pth',
+                                  plans_json_name='plans.json',  # 可以根據需要修改json檔名
+                                  has_classifier_output=False,  # 如果模型有classifier輸出則設為True
+                                  num_processes_preprocessing=2,
+                                  num_processes_segmentation_export=3,
+                                  desired_gpu_index = 0,
+                                  batch_size=16
+                                 )            
+
+            #對預測的brain mask進行後處理
+            prob_nii = nib.load(os.path.join(path_brain, 'DeepAneurysm_00001.nii.gz'))
+            prob = np.array(prob_nii.dataobj) #讀出label的array矩陣      #256*256*22   
+            prob = data_translate(prob, prob_nii)
+        
+            #改讀取mifti的pixel_size資訊
+            header_true = prob_nii.header.copy() #抓出nii header 去算體積 
+            pixdim = header_true['pixdim']  #可以借此從nii的header抓出voxel size        
+            new_pred_label = prob > 0.1
+        
+            #最後存出新mask，存出nifti
+            new_pred_label = data_translate_back(new_pred_label, prob_nii).astype(int)
+            new_pred_label_nii = nii_img_replace(prob_nii, new_pred_label)
+            nib.save(new_pred_label_nii, os.path.join(path_brain, 'DeepAneurysm_00001_0000.nii.gz'))
+            shutil.copy(os.path.join(path_brain, 'DeepAneurysm_00001_0000.nii.gz'), os.path.join(path_nnunet, 'brain_mask.nii.gz')) #取threshold跟cluster放到後面做
+            os.remove(os.path.join(path_brain, 'DeepAneurysm_00001.nii.gz')) #刪除原本的nii
+            print(f"[Done Get brain mask... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done Get brain mask... ] spend {time.time() - start:.0f} sec")
                 
             # 3 Get vessel mask
-            vessel_threshold, _ = VesselSegmenter().threshold_segmentation(image_arr, brain_mask, spacing)
-            vessel_seed = get_vessel_seed(vessel_threshold, mask=brain_mask, spacing=spacing)
-            pred_vessel_mask = predict_vessel(image_arr, brain_mask, model1, verbose=verbose)
-            vessel_mask = combine_two_vessels(vessel_threshold, pred_vessel_mask, seed_mask=vessel_seed, brain_mask=brain_mask)
-            del vessel_threshold, vessel_seed, pred_vessel_mask, brain_bottom_idx
+            start = time.time()
+            predict_from_raw_data(path_img,
+                                  path_brain,
+                                  path_vessel,
+                                  path_vessel_model,
+                                  (0,),
+                                  0.25,
+                                  use_gaussian=True,
+                                  use_mirroring=False,
+                                  perform_everything_on_gpu=True,
+                                  verbose=True,
+                                  save_probabilities=False,
+                                  overwrite=False,
+                                  checkpoint_name='checkpoint_best.pth',
+                                  plans_json_name='plans.json',  # 可以根據需要修改json檔名
+                                  has_classifier_output=False,  # 如果模型有classifier輸出則設為True
+                                  num_processes_preprocessing=2,
+                                  num_processes_segmentation_export=3,
+                                  desired_gpu_index = 0,
+                                  batch_size=32
+                                 )                
+            print(f"[Done Vessel AI Inference... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done Vessel AI Inference... ] spend {time.time() - start:.0f} sec")
 
-            # 3.5 Get vessel skeleton
-            #skeleton_labels = get_vessel_skeleton_labels(vessel_mask, spacing)
+            start = time.time()
+            #對預測的vessel mask進行後處理
+            prob_nii = nib.load(os.path.join(path_vessel, 'DeepAneurysm_00001.nii.gz'))
+            prob = np.array(prob_nii.dataobj) #讀出label的array矩陣      #256*256*22   
+            prob = data_translate(prob, prob_nii)
+        
+            # NIfTI voxel spacing：建議用 header.get_zooms()，避免誤用 pixdim[0] (qfac)
+            spacing = prob_nii.header.get_zooms()[:3]
+            #print('spacing(x,y,z):', spacing)
+            # 注意：這裡先保持在 data_translate 後的座標系做種子/連通塊處理
+            new_pred_label_t = prob > 0.1
+            #底下讀取brain mask然後這段是在用「腦遮罩 + 中心半徑限制 + z 方向高度限制 + 形態學腐蝕」，
+            # 從血管候選區挑出更可靠的主血管核心種子，避免把腦外/腦底雜訊當成血管，並讓後續的「挑主要血管連通塊」更穩定。
+            brain_nii = nib.load(os.path.join(path_nnunet, 'brain_mask.nii.gz'))
+            brain = np.array(brain_nii.dataobj)
+            brain = data_translate(brain, brain_nii)
+
+            # 3.1 Post-process vessel mask
+            vessel_seed = get_vessel_seed(new_pred_label_t, mask=brain, spacing=spacing)
+            vessel_mask = combine_vessel_brain(new_pred_label_t, seed_mask=vessel_seed, brain_mask=brain)
+
+            #最後存出新mask，存出nifti
+            new_vessel_mask = data_translate_back(vessel_mask, prob_nii).astype(int)
+            new_vessel_mask_nii = nii_img_replace(prob_nii, new_vessel_mask)
+
+            nib.save(new_vessel_mask_nii, os.path.join(path_vessel, 'DeepAneurysm_00001_0000.nii.gz'))
+            shutil.copy(os.path.join(path_vessel, 'DeepAneurysm_00001_0000.nii.gz'), os.path.join(path_nnunet, 'Vessel.nii.gz')) #取threshold跟cluster放到後面做
+            os.remove(os.path.join(path_vessel, 'DeepAneurysm_00001.nii.gz')) #刪除原本的nii
+            print(f"[Done Get vessel post-process... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done Get vessel post-process... ] spend {time.time() - start:.0f} sec")
 
             # 4 get vessel 16labels
+            start = time.time()
+            vessel_file = os.path.join(path_nnunet, 'Vessel.nii.gz')
+            vessel_mask, spacing, _ = load_volume(vessel_file, dtype='int16')
             vessel_16labels = predict_vessel_16labels(vessel_mask, model3, spacing, verbose=verbose)
             vessel_16labels, vessel_mask = modify_vessel_16labels(vessel_16labels, spacing)  # 20250716 add
+            save_nii_vessel(path_process, image_arr, vessel_mask, vessel_16labels, out_dir=path_process)
+            print(f"[Done Get vessel 16labels... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done Get vessel 16labels... ] spend {time.time() - start:.0f} sec")
 
             # 5 Pred aneurysm，從這一步開始，底下置換成nnU-Net的model，先把正規化的image跟vessel mask存出，準備放入nnU-Net中
             # 5.1 先存出正規化的影像跟血管
-            save_nii_preprocess(path_process, image_arr, vessel_mask, vessel_16labels, out_dir=path_process) 
+            start = time.time()
             path_normimg = os.path.join(path_process, 'Normalized_Image')
-            path_vessel = os.path.join(path_process, 'Vessel')
-
             predict_from_raw_data(path_normimg,
                                   path_vessel,
                                   path_process,
-                                  path_nnunet_model,
+                                  path_aneurysm_model,
                                   (13,),
                                   0.25,
                                   use_gaussian=True,
@@ -1289,12 +734,6 @@ def model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name
                                   desired_gpu_index = 0,
                                   batch_size=112
                                  )
-            
-            #複製inference result
-            #這邊多2個path，path_tensorflow跟path_nnunet
-            path_tensorflow = os.path.join(path_process, 'tensorflow')
-            path_nnunet = os.path.join(path_process, 'nnUNet')
-            # path_nnunetlow = os.path.join(path_process, 'nnUNetlowth')
 
             shutil.copy(os.path.join(path_process, 'DeepAneurysm_00001.nii.gz'), os.path.join(path_nnunet, 'Prob.nii.gz')) #取threshold跟cluster放到後面做
             # shutil.copy(os.path.join(path_process, 'DeepAneurysm_00001.nii.gz'), os.path.join(path_nnunetlow, 'Prob.nii.gz')) #取threshold跟cluster放到後面做
@@ -1310,28 +749,14 @@ def model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name
         
             spacing_nn = [pixdim[1], pixdim[2]]
         
-            pred_prob_map, df_pred, new_pred_label = filter_aneurysm(prob, spacing_nn, conf_th=0.1, min_diameter=2, top_k=4, obj_th=0.65)
+            pred_prob_map, df_pred, new_pred_label = filter_aneurysm(prob, spacing_nn, conf_th=0.1, min_diameter=2, top_k=4, obj_th=0.73)
         
             #最後存出新mask，存出nifti
             new_pred_label = data_translate_back(new_pred_label, prob_nii).astype(int)
             new_pred_label_nii = nii_img_replace(prob_nii, new_pred_label)
             nib.save(new_pred_label_nii, os.path.join(path_nnunet, 'Pred.nii.gz'))  
-
-            # #這邊存出nnU-Net low threshold的結果
-            # pred_prob_map, df_pred, new_pred_label = filter_aneurysm(prob, spacing_nn, conf_th=0.1, min_diameter=2, top_k=4, obj_th=0.1)
-            # #最後存出新mask，存出nifti
-            # new_pred_label = data_translate_back(new_pred_label, prob_nii).astype(int)
-            # new_pred_label_nii = nii_img_replace(prob_nii, new_pred_label)
-            # nib.save(new_pred_label_nii, os.path.join(path_nnunetlow, 'Pred.nii.gz')) 
-
-            #舊版君彥inference model
-            # start_tensorflow = time.time()
-            # #pred_prob_map, df_pred, pred_label = predict_aneurysm_best(image_arr, brain_mask, vessel_mask, spacing, model2, verbose=verbose)
-            # print(f"[Done TensorFlow Inference... ] spend {time.time() - start_tensorflow:.0f} sec")
-            # logging.info(f"[Done TensorFlow Inference...  ] spend {time.time() - start_tensorflow:.0f} sec")
-
-            #這邊存出君彥inference model的結果
-            # save_nii(path_process, brain_mask, vessel_mask, vessel_16labels, new_pred_label, pred_prob_map, out_dir=path_tensorflow)
+            print(f"[Done Aneurysm AI Inference... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done Aneurysm AI Inference... ] spend {time.time() - start:.0f} sec")
 
             #以json做輸出
             time.sleep(1)
@@ -1365,7 +790,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--path_code', type=str, help='目前執行的code')
     parser.add_argument('--path_process', type=str, help='目前執行的資料夾')
-    parser.add_argument('--path_nnunet_model', type=str, help='nnU-Net model路徑')
+    parser.add_argument('--path_brain_model', type=str, help='brain model路徑')
+    parser.add_argument('--path_vessel_model', type=str, help='vessel model路徑')
+    parser.add_argument('--path_aneurysm_model', type=str, help='aneurysm model路徑')
     parser.add_argument('--case', type=str, help='目前執行的case的ID')
     parser.add_argument('--path_log', type=str, help='log資料夾')
     parser.add_argument('--gpu_n', type=int, help='第幾顆gpu')
@@ -1373,9 +800,11 @@ if __name__ == '__main__':
 
     path_code = str(args.path_code)
     path_process = str(args.path_process)
-    path_nnunet_model = str(args.path_nnunet_model)
+    path_brain_model = str(args.path_brain_model)
+    path_vessel_model = str(args.path_vessel_model)
+    path_aneurysm_model = str(args.path_aneurysm_model)
     case_name = str(args.case)
     path_log = str(args.path_log)
     gpu_n = args.gpu_n
 
-    model_predict_aneurysm(path_code, path_process, path_nnunet_model, case_name, path_log, gpu_n)
+    model_predict_aneurysm(path_code, path_process, path_brain_model, path_vessel_model, path_aneurysm_model, case_name, path_log, gpu_n)

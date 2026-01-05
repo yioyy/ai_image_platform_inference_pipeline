@@ -273,7 +273,15 @@ def _build_mask_series(
             continue
         dcm_seg = pydicom.dcmread(str(result["mask_path"]), stop_before_pixels=True)
         slice_idx = max(0, min(int(result["main_seg_slice"]), num_images - 1))
-        dicom_uid = source_images[slice_idx].get((0x0008, 0x0018)).value
+        dicom_ds = source_images[slice_idx]
+        dicom_uid = dicom_ds.get((0x0008, 0x0018)).value
+        instance_number_elem = dicom_ds.get((0x0020, 0x0013))
+        im_instance_number = None
+        if instance_number_elem is not None and instance_number_elem.value is not None:
+            try:
+                im_instance_number = int(instance_number_elem.value)
+            except (TypeError, ValueError):
+                im_instance_number = None
         instances.append(
             WMHMaskInstanceRequest(
                 mask_index=lesion.index,
@@ -284,6 +292,7 @@ def _build_mask_series(
                 fazekas=str(fazekas),
                 prob_max=f"{lesion.prob_max:.2f}",
                 prob_mean=f"{lesion.prob_mean:.2f}",
+                im=im_instance_number,
                 checked="1",
                 is_ai="1",
                 seg_series_instance_uid=dcm_seg[0x20, 0x000E].value,

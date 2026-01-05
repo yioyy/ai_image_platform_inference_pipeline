@@ -21,6 +21,8 @@ class WMHMaskInstanceRequest(BaseModel):
     fazekas: str
     prob_max: str
     prob_mean: str
+    # 額外定位資訊：上游若提供 im，schema 需宣告以避免 Pydantic 轉型丟棄
+    im: Optional[int] = None
     checked: str = "1"
     is_ai: str = "1"
     seg_series_instance_uid: str

@@ -87,13 +87,34 @@ def pipeline_aneurysm(ID,
                       MRA_BRAIN_file,  
                       path_output,
                       path_code = '/mnt/e/pipeline/chuan/code/', 
-                      path_nnunet_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres',
+                      path_brain_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset134_DeepMRABrain/nnUNetTrainer__nnUNetPlans__3d_fullres',
+                      path_vessel_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset135_DeepMRAVessel/nnUNetTrainer__nnUNetPlans__3d_fullres',
+                      path_aneurysm_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres',
                       path_processModel = '/mnt/e/pipeline/chuan/process/Deep_Aneurysm/', 
                       path_outdcm = '',
                       path_json = '/mnt/e/pipeline/chuan/json/',
                       path_log = '/mnt/e/pipeline/chuan/log/', 
                       gpu_n = 0
                       ):
+    # ---- path hygiene ----
+    # 常見問題：有些上游會把 Windows 換行符 \r\n 帶進參數，導致路徑變成 ".../\r/xxx"
+    def _clean_path(p: str) -> str:
+        return os.path.normpath(str(p).strip().replace("\r", "").replace("\n", ""))
+
+    ID = str(ID).strip().replace("\r", "").replace("\n", "")
+    MRA_BRAIN_file = _clean_path(MRA_BRAIN_file)
+    path_output = _clean_path(path_output)
+    path_code = _clean_path(path_code)
+    path_brain_model = _clean_path(path_brain_model)
+    path_vessel_model = _clean_path(path_vessel_model)
+    path_aneurysm_model = _clean_path(path_aneurysm_model)
+    path_processModel = _clean_path(path_processModel)
+    path_outdcm = _clean_path(path_outdcm)
+    path_json = _clean_path(path_json)
+    path_log = _clean_path(path_log)
+
+    # 確保輸出資料夾存在，避免後面 shutil.copy 直接 FileNotFoundError
+    os.makedirs(path_output, exist_ok=True)
 
     #當使用gpu有錯時才確認
     logger = tf.get_logger()
@@ -151,9 +172,6 @@ def pipeline_aneurysm(ID,
             #os.system(gpu_line)
 
             #所以這裡建立2個資料夾，一個是君彥的模型結果，一個是nnU-Net的模型結果
-            # path_tensorflow = os.path.join(path_processID, 'tensorflow')
-            # if not os.path.isdir(path_tensorflow):  #如果資料夾不存在就建立
-            #     os.mkdir(path_tensorflow) #製作tensorflow資料夾
             path_nnunet = os.path.join(path_processID, 'nnUNet')
             if not os.path.isdir(path_nnunet):  #如果資料夾不存在就建立
                 os.mkdir(path_nnunet) #製作nnUNet資料夾
@@ -185,7 +203,9 @@ def pipeline_aneurysm(ID,
                    "python", "/data/4TB1/pipeline/chuan/code/gpu_aneurysm.py",
                    "--path_code", path_code,
                    "--path_process", path_processID,
-                   "--path_nnunet_model", path_nnunet_model,
+                   "--path_brain_model", path_brain_model,
+                   "--path_vessel_model", path_vessel_model,
+                   "--path_aneurysm_model", path_aneurysm_model,
                    "--case", ID,
                    "--path_log", path_log,
                    "--gpu_n", str(gpu_n)  # 注意要轉成字串
@@ -195,28 +215,8 @@ def pipeline_aneurysm(ID,
             # 執行 subprocess
             start = time.time()
             subprocess.run(cmd)
-            print(f"[Done AI Inference... ] spend {time.time() - start:.0f} sec")
-            logging.info(f"[Done AI Inference... ] spend {time.time() - start:.0f} sec")
-
-            #接下來做mip影像，這邊要改分別在nnU-Net跟tensorflow的資料夾做mip影像
-            # path_dcm_t = os.path.join(path_tensorflow, 'Dicom')
-            # path_nii_t = os.path.join(path_tensorflow, 'Image_nii')
-            # path_reslice_t = os.path.join(path_tensorflow, 'Image_reslice')
-            # path_excel_t = os.path.join(path_tensorflow, 'excel')
-            # if not os.path.isdir(path_dcm_t):  #如果資料夾不存在就建立
-            #     os.mkdir(path_dcm_t) #製作nii資料夾
-            # if not os.path.isdir(path_nii_t):  #如果資料夾不存在就建立
-            #     os.mkdir(path_nii_t) #製作nii資料夾
-            # if not os.path.isdir(path_reslice_t):  #如果資料夾不存在就建立
-            #     os.mkdir(path_reslice_t) #製作nii資料夾
-            # if not os.path.isdir(path_excel_t):  #如果資料夾不存在就建立
-            #     os.mkdir(path_excel_t) #製作nii資料夾
-
-            #複製nii到nii資料夾
-            # shutil.copy(os.path.join(path_processID, 'MRA_BRAIN.nii.gz'), os.path.join(path_tensorflow, 'MRA_BRAIN.nii.gz'))
-            # shutil.copy(os.path.join(path_processID, 'MRA_BRAIN.nii.gz'), os.path.join(path_nii_t, 'MRA_BRAIN.nii.gz'))
-            # shutil.copy(os.path.join(path_tensorflow, 'Pred.nii.gz'), os.path.join(path_nii_t, 'Pred.nii.gz'))
-            # shutil.copy(os.path.join(path_processID, 'Vessel.nii.gz'), os.path.join(path_nii_t, 'Vessel.nii.gz'))
+            print(f"[Done stage 1: Aneurysm AI Inference... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done stage 1: Aneurysm AI Inference... ] spend {time.time() - start:.0f} sec")
 
             #這裡再針對MRA_Brain跑一次SynthSeg，為了後續做前後比較的模組
             path_synthseg = os.path.join(path_code, 'model_weights','SynthSeg_parcellation_tf28','code')
@@ -232,8 +232,8 @@ def pipeline_aneurysm(ID,
             # 執行 subprocess
             start = time.time()
             subprocess.run(cmd)
-            print(f"[Done AI SynthSEG Inference... ] spend {time.time() - start:.0f} sec")
-            logging.info(f"[Done AI SynthSEG Inference... ] spend {time.time() - start:.0f} sec")
+            print(f"[Done SynthSEG AI Inference... ] spend {time.time() - start:.0f} sec")
+            logging.info(f"[Done SynthSEG AI Inference... ] spend {time.time() - start:.0f} sec")
 
             #這邊還要做resample到original space
             SynthSEG_array = resampleSynthSEG2original(path_nii_n, 'MRA_BRAIN', 'synthseg33') 
@@ -246,16 +246,12 @@ def pipeline_aneurysm(ID,
 
             #reslice，所有都要做2次
             start_reslice = time.time()
-            # reslice_nifti_pred_nobrain(path_nii_t, path_reslice_t)
             reslice_nifti_pred_nobrain(path_nii_n, path_reslice_n)
-            # reslice_nifti_pred_nobrain(path_nii_nl, path_reslice_nl)
             print(f"[Done reslice... ] spend {time.time() - start_reslice:.0f} sec")
             logging.info(f"[Done reslice... ] spend {time.time() - start_reslice:.0f} sec")
 
             #做mip影像
             #複製dicom影像
-            # if not os.path.isdir(os.path.join(path_dcm_t, 'MRA_BRAIN')):  #如果資料夾不存在就建立
-            #     shutil.copytree(path_outdcm, os.path.join(path_dcm_t, 'MRA_BRAIN'))
             if not os.path.isdir(os.path.join(path_dcm_n, 'MRA_BRAIN')):  #如果資料夾不存在就建立
                 shutil.copytree(path_outdcm, os.path.join(path_dcm_n, 'MRA_BRAIN'))
 
@@ -269,9 +265,7 @@ def pipeline_aneurysm(ID,
 
             path_png = os.path.join(path_code, 'png')
             start_mip = time.time()
-            # create_MIP_pred(path_dcm_t, path_reslice_t, path_png, gpu_n)
             create_MIP_pred(path_dcm_n, path_reslice_n, path_png, gpu_n)
-            # create_MIP_pred(path_dcm_nl, path_reslice_nl, path_png, gpu_n)
             print(f"[Done create_MIP_pred... ] spend {time.time() - start_mip:.0f} sec")
             logging.info(f"[Done create_MIP_pred... ] spend {time.time() - start_mip:.0f} sec")
 
@@ -280,17 +274,12 @@ def pipeline_aneurysm(ID,
 
             #接下來是計算動脈瘤的各項數據，各做一次
             start_calculate = time.time()
-            # aneurysm_analysis_pipeline = AneurysmPipeline(path_dcm_t, path_tensorflow, path_excel_t, ID)
-            # aneurysm_analysis_pipeline.run_all()
             aneurysm_analysis_pipeline = AneurysmPipeline(path_dcm_n, path_nnunet, path_excel_n, ID)
             aneurysm_analysis_pipeline.run_all()
             print(f"[Done calculate_aneurysm_long_axis... ] spend {time.time() - start_calculate:.0f} sec")
             logging.info(f"[Done calculate_aneurysm_long_axis... ] spend {time.time() - start_calculate:.0f} sec")
 
             #接下來製作dicom-seg
-            # path_dicomseg_t = os.path.join(path_dcm_t, 'Dicom-Seg')
-            # if not os.path.isdir(path_dicomseg_t):  #如果資料夾不存在就建立
-            #     os.mkdir(path_dicomseg_t) #製作nii資料夾
             path_dicomseg_n = os.path.join(path_dcm_n, 'Dicom-Seg')
             if not os.path.isdir(path_dicomseg_n):  #如果資料夾不存在就建立
                 os.mkdir(path_dicomseg_n) #製作nii資料夾   
@@ -301,19 +290,12 @@ def pipeline_aneurysm(ID,
             # logging.info(f"[Done create_dicomseg... ] spend {time.time() - start_dicomseg:.0f} sec")
 
             #將dicom壓縮不包含dicom-seg  Dicom_JPEGlossless => 由於要用numpy > 2.0，之後補強
-            # path_dcmjpeglossless_t = os.path.join(path_tensorflow, 'Dicom_JPEGlossless')
-            # if not os.path.isdir(path_dcmjpeglossless_t):  #如果資料夾不存在就建立
-            #     os.mkdir(path_dcmjpeglossless_t) #製作nii資料夾
             path_dcmjpeglossless_n = os.path.join(path_nnunet, 'Dicom_JPEGlossless')
             if not os.path.isdir(path_dcmjpeglossless_n):  #如果資料夾不存在就建立
                 os.mkdir(path_dcmjpeglossless_n) #製作nii資料夾          
-            #compress_dicom_into_jpeglossless(path_dcm_t, path_dcmjpeglossless_t)
             #compress_dicom_into_jpeglossless(path_dcm_n, path_dcmjpeglossless_n)
 
             #建立json檔
-            # path_json_out_t = os.path.join(path_tensorflow, 'JSON')
-            # if not os.path.isdir(path_json_out_t):  #如果資料夾不存在就建立
-            #     os.mkdir(path_json_out_t) #製作nii資料夾
             path_json_out_n = os.path.join(path_nnunet, 'JSON')
             if not os.path.isdir(path_json_out_n):  #如果資料夾不存在就建立
                 os.mkdir(path_json_out_n) #製作nii資料夾
@@ -323,7 +305,6 @@ def pipeline_aneurysm(ID,
             group_id2 = 56 # nnU-Net的模型
             # model_id = '924d1538-597c-41d6-bc27-4b0b359111cf'
             start_json = time.time()
-            # make_pred_json(ID, pathlib.Path(path_tensorflow), group_id1)  #(_id, path_root, group_id)
             #make_aneurysm_pred_json(ID, pathlib.Path(path_nnunet), model_id)  #(_id, path_root, group_id)
             make_pred_json(ID, pathlib.Path(path_nnunet), group_id2)  #(_id, path_root, group_id)
             #make_pred_json(excel_file, path_dcm, path_nii, path_reslice, path_dicomseg, path_json_out, [ID], Series, group_id)
@@ -334,26 +315,19 @@ def pipeline_aneurysm(ID,
             # make_vessel_pred_json(ID, pathlib.Path(path_nnunet))
 
             #接下來上傳dicom到orthanc
-            # path_zip_t = os.path.join(path_tensorflow, 'Dicom_zip')
-            # if not os.path.isdir(path_zip_t):
-            #     os.mkdir(path_zip_t)
             path_zip_n = os.path.join(path_nnunet, 'Dicom_zip')
             if not os.path.isdir(path_zip_n):
                 os.mkdir(path_zip_n)
 
             Series = ['MRA_BRAIN', 'MIP_Pitch', 'MIP_Yaw', 'Dicom-Seg']
             start_upload_dicom = time.time()
-            # orthanc_zip_upload(path_dcm_t, path_zip_t, Series)
             orthanc_zip_upload(path_dcm_n, path_zip_n, Series)
             print(f"[Done start_upload_dicom... ] spend {time.time() - start_upload_dicom:.0f} sec")
             logging.info(f"[Done start_upload_dicom... ] spend {time.time() - start_upload_dicom:.0f} sec")
 
             #接下來，上傳json
-            # json_file_t = os.path.join(path_json_out_t, ID + '_platform_json.json')
             json_file_n = os.path.join(path_json_out_n, ID + '_platform_json.json')
-            # upload_json_aiteam(json_file_t)
             upload_json_aiteam(json_file_n)
-            # upload_json_aiteam(json_file_nl)
 
             #把json跟nii輸出到out資料夾，這裡只傳nnunet的結果，因為nnU-Net的結果比較好
             shutil.copy(os.path.join(path_nnunet, 'Pred.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm.nii.gz'))
@@ -482,6 +456,9 @@ if __name__ == '__main__':
     Inputs = args.Inputs  # 將列表合併為字符串，保留順序
     DicomDirs = args.DicomDir #對應的dicom資料夾，用來做dicom-seg
     path_output = str(args.Output_folder)
+    #path_output = args.Output_folder
+    # 避免命令列/文字檔帶入 \r\n 造成路徑錯誤
+    path_output = os.path.normpath(path_output.strip().replace("\r", "").replace("\n", ""))
 
     #讀出DWI, DWI0, ADC, SynthSEG的檔案
     MRA_BRAIN_file = Inputs[0]
@@ -492,7 +469,9 @@ if __name__ == '__main__':
     #下面設定各個路徑
     path_code = '/data/4TB1/pipeline/chuan/code/'
     path_process = '/data/4TB1/pipeline/chuan/process/'  #前處理dicom路徑(test case)
-    path_nnunet_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres'
+    path_brain_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset134_DeepMRABrain/nnUNetTrainer__nnUNetPlans__3d_fullres'
+    path_vessel_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset135_DeepMRAVessel/nnUNetTrainer__nnUNetPlans__3d_fullres'
+    path_aneurysm_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres'
     path_processModel = os.path.join(path_process, 'Deep_Aneurysm')  #前處理dicom路徑(test case)
     #path_processID = os.path.join(path_processModel, ID)  #前處理dicom路徑(test case)
 
@@ -511,7 +490,7 @@ if __name__ == '__main__':
     #os.makedirs(path_output,exist_ok=True)
 
     #直接當作function的輸入，因為可能會切換成nnUNet的版本，所以自訂化模型移到跟model一起，synthseg自己做，不用統一
-    pipeline_aneurysm(ID, MRA_BRAIN_file, path_output, path_code, path_nnunet_model, path_processModel, path_DcmDir, path_json, path_log, gpu_n)
+    pipeline_aneurysm(ID, MRA_BRAIN_file, path_output, path_code, path_brain_model, path_vessel_model, path_aneurysm_model, path_processModel, path_DcmDir, path_json, path_log, gpu_n)
     
 
     # #最後再讀取json檔結果
