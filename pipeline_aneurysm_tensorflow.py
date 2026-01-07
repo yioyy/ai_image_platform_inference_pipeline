@@ -93,6 +93,24 @@ def pipeline_aneurysm(ID,
                       gpu_n = 0
                       ):
 
+    # ---- path hygiene ----
+    # 常見問題：有些上游會把 Windows 換行符 \r\n 帶進參數，導致路徑變成 ".../\r/xxx"
+    def _clean_path(p: str) -> str:
+        return os.path.normpath(str(p).strip().replace("\r", "").replace("\n", ""))
+
+    ID = str(ID).strip().replace("\r", "").replace("\n", "")
+    MRA_BRAIN_file = _clean_path(MRA_BRAIN_file)
+    path_output = _clean_path(path_output)
+    path_code = _clean_path(path_code)
+    path_nnunet_model = _clean_path(path_nnunet_model)
+    path_processModel = _clean_path(path_processModel)
+    path_outdcm = _clean_path(path_outdcm)
+    path_json = _clean_path(path_json)
+    path_log = _clean_path(path_log)
+
+    # 確保輸出資料夾存在，避免後面 shutil.copy 直接 FileNotFoundError
+    os.makedirs(path_output, exist_ok=True)
+
     #當使用gpu有錯時才確認
     logger = tf.get_logger()
     logger.setLevel(logging.ERROR)
