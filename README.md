@@ -17,6 +17,65 @@
 
 ---
 
+## 1.1 Follow-up（前後比較）模組（檔案導向）
+
+此模組是依 `openspec` 中的 `add-followup-comparison-module` 規格移植，主要用於 **baseline vs followup** 的病灶比較（配準 → 合併 pred → 產出 Followup JSON）。
+
+- 主管道：`pipeline_followup.py`
+- 啟動腳本：`pipeline_followup.sh`
+- 配準：`registration.py`（使用 FSL `flirt`）
+- 合併 pred：`generate_followup_pred.py`（輸出 `Pred_<model>_followup.nii.gz`，label=1/2/3）
+- 報告：`followup_report.py`（輸出 `Followup_<model>_platform_json.json`）
+- 依賴：`requirements_followup.txt`
+
+### 示範命令（舊入口：提供 NIfTI）
+
+```bash
+python pipeline_followup.py \
+  --baseline_ID "<Baseline_ID>" \
+  --baseline_Inputs "<Baseline_Pred.nii.gz>" "<Baseline_SynthSEG.nii.gz>" \
+  --baseline_DicomDir "<Baseline_DICOM_Dir_or_empty>" \
+  --baseline_DicomSegDir "<Baseline_DicomSegDir>" \
+  --baseline_json "<Baseline_platform_json.json>" \
+  --followup_ID "<Followup_ID>" \
+  --followup_Inputs "<Followup_Pred.nii.gz>" "<Followup_SynthSEG.nii.gz>" \
+  --followup_DicomSegDir "<Followup_DicomSegDir>" \
+  --followup_json "<Followup_platform_json.json>" \
+  --path_output "<Output_Folder>" \
+  --model "CMB" \
+  --path_process "./process/Deep_FollowUp/" \
+  --path_log "./log/" \
+  --fsl_flirt_path "/usr/local/fsl/bin/flirt" \
+  --upload_json
+```
+
+### 示範命令（新入口：不提供任何 NIfTI，用 Pred/SynthSEG 的 DICOM-SEG + headers 反推）
+
+```bash
+python pipeline_followup_from_dicomseg.py \
+  --baseline_ID "<Baseline_ID>" \
+  --baseline_pred_dicomseg "<Baseline_Pred_<model>.dcm>" \
+  --baseline_synthseg_dicomseg "<Baseline_SynthSEG_<model>.dcm>" \
+  --baseline_series_headers "<Baseline_series_headers.json>" \
+  --baseline_DicomDir "<Baseline_DICOM_Dir_or_empty>" \
+  --baseline_DicomSegDir "<Baseline_DicomSegDir>" \
+  --baseline_json "<Baseline_platform_json.json>" \
+  --followup_ID "<Followup_ID>" \
+  --followup_pred_dicomseg "<Followup_Pred_<model>.dcm>" \
+  --followup_synthseg_dicomseg "<Followup_SynthSEG_<model>.dcm>" \
+  --followup_series_headers "<Followup_series_headers.json>" \
+  --followup_DicomSegDir "<Followup_DicomSegDir>" \
+  --followup_json "<Followup_platform_json.json>" \
+  --path_output "<Output_Folder>" \
+  --model "CMB" \
+  --path_process "./process/Deep_FollowUp/" \
+  --path_log "./log/" \
+  --fsl_flirt_path "/usr/local/fsl/bin/flirt" \
+  --upload_json
+```
+
+---
+
 ## 2. 執行方式
 
 ### 2.1 直接執行（命令列）

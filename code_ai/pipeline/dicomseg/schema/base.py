@@ -216,13 +216,42 @@ class StudyRequest(BaseModel):
     @field_validator('study_date', mode='before')
     @classmethod
     def parse_date(cls, value):
+        """
+        接受多種輸入：
+        - datetime.date / datetime.datetime：直接回傳（或取 .date()）
+        - 'YYYYMMDD'：DICOM 常見格式
+        - 'YYYY-MM-DD'：平台 JSON 常見格式
+        其他格式解析失敗時，回傳今天日期（維持原本容錯行為）。
+        """
         try:
-            if isinstance(value, str) and len(value) == 8:
-                return datetime.date(int(value[:4]), int(value[4:6]), int(value[6:8]))
-            else:
-                return datetime.datetime.strptime(value, '%Y-%m-%d').date()
-        except:
-            return datetime.datetime.now().date()
+            if value is None:
+                return datetime.datetime.now().date()
+
+            # pydicom / 上游可能直接傳 date 或 datetime
+            if isinstance(value, datetime.datetime):
+                return value.date()
+            if isinstance(value, datetime.date):
+                return value
+
+            if isinstance(value, str):
+                text = value.strip()
+                digits = ''.join(ch for ch in text if ch.isdigit())
+                if len(digits) >= 8:
+                    digits = digits[:8]
+                if len(digits) == 8:
+                    return datetime.date(int(digits[:4]), int(digits[4:6]), int(digits[6:8]))
+                # 嘗試 ISO 格式
+                if text:
+                    return datetime.datetime.strptime(text[:10], '%Y-%m-%d').date()
+
+            # 其他型別：嘗試轉字串再 parse
+            text = str(value).strip()
+            if text:
+                return datetime.datetime.strptime(text[:10], '%Y-%m-%d').date()
+        except Exception:
+            pass
+
+        return datetime.datetime.now().date()
 
     @field_validator('age', mode='before')
     @classmethod
