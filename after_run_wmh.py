@@ -8,6 +8,7 @@ import os
 import pathlib
 import sys
 import time
+from datetime import datetime
 from typing import List, Optional
 
 import cv2  # type: ignore
@@ -21,6 +22,7 @@ from wmh_pipeline import WMHPipeline
 def after_run_wmh(path_nnunet: str, path_output: str, patient_id: str, path_code: str) -> bool:
     del path_output  # 尚未使用，預留介面
     try:
+        _configure_logging(path_code)
         start_time = time.time()
         logging.info("after_run_wmh start: %s", patient_id)
 
@@ -76,6 +78,44 @@ def after_run_wmh(path_nnunet: str, path_output: str, patient_id: str, path_code
         logging.error("after_run_wmh 發生錯誤: %s", exc)
         logging.error("Catch an exception.", exc_info=True)
         return False
+
+
+def _configure_logging(path_code: str) -> str:
+    """將 log 寫到專案既定位置：<project_root>/log/YYYYMMDD.log（與其他 pipeline 一致）。"""
+    project_root = pathlib.Path(path_code).resolve().parent
+    log_dir = project_root / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    time_str_short = datetime.now().strftime("%Y%m%d")
+    log_file = log_dir / f"{time_str_short}.log"
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    log_file_abs = os.path.abspath(str(log_file))
+    has_same_file = any(
+        isinstance(h, logging.FileHandler)
+        and os.path.abspath(getattr(h, "baseFilename", "")) == log_file_abs
+        for h in root.handlers
+    )
+    if not has_same_file:
+        fh = logging.FileHandler(log_file_abs, mode="a", encoding="utf-8")
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+
+    has_stream = any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in root.handlers
+    )
+    if not has_stream:
+        sh = logging.StreamHandler()
+        sh.setLevel(logging.INFO)
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
+
+    return str(log_file)
 
 
 def _export_png_reports(path_result: str, path_dcm: str, patient_id: str) -> None:
@@ -170,9 +210,19 @@ def _png_to_dicom(png_path: str, template_path: str, export_dir: str, seq: int) 
 
 
 def _load_make_pred_json(path_code: str):
+    """動態載入 code_ai.pipeline.dicomseg.wmh.main，並自動校正 sys.path。"""
     abs_path = os.path.abspath(path_code)
-    if abs_path not in sys.path:
-        sys.path.append(abs_path)
+    candidates = [abs_path, os.path.join(abs_path, "code")]
+    chosen = None
+    for cand in candidates:
+        if os.path.isdir(os.path.join(cand, "code_ai")):
+            chosen = cand
+            break
+    if chosen is None:
+        chosen = abs_path
+
+    if chosen not in sys.path:
+        sys.path.append(chosen)
     module = importlib.import_module("code_ai.pipeline.dicomseg.wmh")
     return module.main
 
@@ -187,7 +237,7 @@ if __name__ == "__main__":
     parser.add_argument("--path_code", type=str, required=True)
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    _configure_logging(args.path_code)
 
     ok = after_run_wmh(
         path_nnunet=args.path_nnunet,

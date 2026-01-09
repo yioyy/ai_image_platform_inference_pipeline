@@ -1750,13 +1750,19 @@ def upload_json_aiteam(json_file):
     def post_json(path):
         with open(path, 'rb') as f:
             data = orjson.loads(f.read())
-        response = client.post(UPLOAD_DATA_JSON_URL, json=data)
-        print(f"\n📤 Uploaded: {os.path.basename(path)}")
-        print(f"✅ Status: {response.status_code}")
         try:
-            print("📥 Response:", response.json())
+            study_date = ""
+            if isinstance(data.get("study"), dict):
+                study_date = data["study"].get("study_date", "")
+            logging.info("Uploading platform JSON: file=%s study_date=%r", path, study_date)
         except Exception:
-            print("📥 Response (raw):", response.text)
+            pass
+        response = client.post(UPLOAD_DATA_JSON_URL, json=data)
+        logging.info("Upload JSON done: file=%s status=%s", os.path.basename(path), response.status_code)
+        try:
+            logging.info("Upload JSON response: %s", response.json())
+        except Exception:
+            logging.info("Upload JSON response (raw): %s", response.text)
 
     with client:
         if isinstance(json_file, str):

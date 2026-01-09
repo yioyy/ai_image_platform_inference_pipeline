@@ -252,15 +252,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: List[str]) -> int:
     args = _build_parser().parse_args(argv)
-    Path(args.path_log).mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(str(Path(args.path_log) / f"followup_{args.baseline_ID}.log"), encoding="utf-8"),
-        ],
-    )
+
+    if args.path_log:
+        Path(args.path_log).mkdir(parents=True, exist_ok=True)
+
+        localt = time.localtime(time.time())
+        time_str_short = str(localt.tm_year) + str(localt.tm_mon).rjust(2, "0") + str(localt.tm_mday).rjust(2, "0")
+        log_file = str(Path(args.path_log) / f"{time_str_short}.log")
+
+        if not Path(log_file).is_file():
+            with open(log_file, "a+", encoding="utf-8") as f:
+                f.write("")
+
+        FORMAT = "%(asctime)s %(levelname)s %(message)s"
+        logging.basicConfig(level=logging.INFO, filename=log_file, filemode="a", format=FORMAT)
+    else:
+        FORMAT = "%(asctime)s %(levelname)s %(message)s"
+        logging.basicConfig(level=logging.INFO, stream=sys.stdout, format=FORMAT)
 
     pipeline_followup(
         baseline_ID=args.baseline_ID,

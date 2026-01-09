@@ -9,6 +9,7 @@ import sys
 import time
 import logging
 import pathlib
+from datetime import datetime
 from typing import List, Optional
 
 import cv2  # type: ignore
@@ -22,6 +23,7 @@ def after_run(path_nnunet: str, path_output: str, patient_id: str, path_code: st
     """執行梗塞後處理流程並上傳結果。"""
     del path_output  # 尚未使用，預留介面
     try:
+        _configure_logging(path_code)
         start_time = time.time()
         logging.info("after_run start: %s", patient_id)
 
@@ -79,6 +81,47 @@ def after_run(path_nnunet: str, path_output: str, patient_id: str, path_code: st
         logging.error("after_run 發生錯誤: %s", exc)
         logging.error("Catch an exception.", exc_info=True)
         return False
+
+
+def _configure_logging(path_code: str) -> str:
+    """將 log 寫到專案既定位置：<project_root>/log/YYYYMMDD.log（與其他 pipeline 一致）。"""
+    project_root = pathlib.Path(path_code).resolve().parent
+    log_dir = project_root / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # 與 gpu_infarct / pipeline_infarct_torch 相同：每日一個檔名
+    time_str_short = datetime.now().strftime("%Y%m%d")
+    log_file = log_dir / f"{time_str_short}.log"
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # 確保寫入檔案
+    log_file_abs = os.path.abspath(str(log_file))
+    has_same_file = any(
+        isinstance(h, logging.FileHandler)
+        and os.path.abspath(getattr(h, "baseFilename", "")) == log_file_abs
+        for h in root.handlers
+    )
+    if not has_same_file:
+        fh = logging.FileHandler(log_file_abs, mode="a", encoding="utf-8")
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+
+    # 同時保留 console 輸出（避免只寫檔不好 debug）
+    has_stream = any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in root.handlers
+    )
+    if not has_stream:
+        sh = logging.StreamHandler()
+        sh.setLevel(logging.INFO)
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
+
+    return str(log_file)
 
 
 def _load_make_pred_json(path_code: str):
@@ -249,10 +292,7 @@ if __name__ == "__main__":
     parser.add_argument("--path_code", type=str, required=True, help="code 根目錄")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-    )
+    _configure_logging(args.path_code)
 
     ok = after_run(
         path_nnunet=args.path_nnunet,

@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -33,6 +34,7 @@ from code_ai.pipeline.dicomseg.schema.wmh import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DATASET_PATH = PROJECT_ROOT / "dataset.json"
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -109,7 +111,7 @@ def execute_dicomseg_platform_json(_id: str, root_path: Path, group_id: int = 57
     if not mask_series:
         raise ValueError("無法產生任何 DICOM-SEG")
 
-    study_request = _build_study_request(series_data, group_id, len(lesions))
+    study_request = _build_study_request(series_data, group_id, len(lesions), _id=_id)
     sorted_request = _build_sorted_request(series_data)
     mask_request = WMHMaskRequest(
         study_instance_uid=study_request.study_instance_uid,
@@ -134,6 +136,13 @@ def execute_dicomseg_platform_json(_id: str, root_path: Path, group_id: int = 57
     payload = ai_request.model_dump(mode="json")
     _merge_study_models(payload)
     _ensure_series_type_list(payload)
+    try:
+        study_date_val = ""
+        if isinstance(payload.get("study"), dict):
+            study_date_val = payload["study"].get("study_date", "")
+        LOGGER.info("Writing platform JSON: path=%s study_date=%r", output_path, study_date_val)
+    except Exception:  # noqa: BLE001
+        pass
     with open(output_path, "w", encoding="utf-8") as fp:
         json.dump(payload, fp, indent=2, ensure_ascii=False)
     return output_path
@@ -316,27 +325,68 @@ def _build_mask_series(
 
 
 def _build_study_request(
-    series_data: Dict[str, SeriesBundle], group_id: int, lesion_count: int
+    series_data: Dict[str, SeriesBundle], group_id: int, lesion_count: int, _id: str = ""
 ) -> StudyRequest:
     if not series_data:
         raise ValueError("缺少 DICOM series 資料，無法建立 StudyRequest")
 
-    primary_bundle = next(iter(series_data.values()))
-    first_dcm = primary_bundle.source_images[0]
+    first_dcm, primary_series = _pick_primary_dicom(series_data)
 
     series_entries, model_entries = _build_study_components(series_data, lesion_count)
 
-    def _parse_date(value: str):
+    def _try_parse_date(value: object) -> Optional[date]:
+        # 有些環境會設定 pydicom 將 DA 直接轉成 datetime.date
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+
+        text = str(value).strip() if value not in ("", None) else ""
+        digits = "".join(ch for ch in text if ch.isdigit())
+        if len(digits) >= 8:
+            digits = digits[:8]
         try:
-            return pd.to_datetime(value, format="%Y%m%d").date()
-        except Exception:
-            return pd.Timestamp.utcnow().date()
+            if digits:
+                return datetime.strptime(digits, "%Y%m%d").date()
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 支援 ISO 格式（例如 "2026-01-05"）
+        try:
+            if text:
+                return datetime.fromisoformat(text[:10]).date()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
     def _parse_age(value: str):
         digits = "".join(ch for ch in str(value) if ch.isdigit())
         return int(digits) if digits else 0
 
-    study_date = _parse_date(getattr(first_dcm, "StudyDate", "19700101"))
+    date_raw = _first_available_attr(
+        first_dcm,
+        ["StudyDate", "SeriesDate", "AcquisitionDate", "ContentDate"],
+    )
+    study_date = _try_parse_date(date_raw)
+    if study_date is None and _id:
+        study_date = _try_parse_date(_extract_date_from_id(_id))
+
+    if study_date is None:
+        LOGGER.warning(
+            "StudyDate 解析失敗，將使用今天日期：primary_series=%s, raw=%r, id=%r",
+            primary_series,
+            date_raw,
+            _id,
+        )
+        study_date = datetime.utcnow().date()
+
+    LOGGER.info(
+        "StudyDate resolved: primary_series=%s raw=%r -> %s (id=%r)",
+        primary_series,
+        date_raw,
+        study_date,
+        _id,
+    )
     return StudyRequest(
         group_id=group_id,
         study_date=study_date,
@@ -349,6 +399,41 @@ def _build_study_request(
         series=series_entries,
         model=model_entries,
     )
+
+
+def _pick_primary_dicom(series_data: Dict[str, SeriesBundle]) -> Tuple[pydicom.FileDataset, str]:
+    """挑一張最能代表 Study 的 DICOM（WMH 優先 T2FLAIR_AXI，其次任一序列）。"""
+    for series_enum in (SeriesTypeEnum.T2FLAIR_AXI,):
+        bundle = series_data.get(series_enum.name)
+        if bundle and bundle.source_images:
+            return bundle.source_images[0], series_enum.name
+
+    primary_bundle = next(iter(series_data.values()))
+    if not primary_bundle.source_images:
+        raise ValueError("series_data 內沒有任何 source_images，無法取得 Study 代表 DICOM")
+    return primary_bundle.source_images[0], "UNKNOWN"
+
+
+def _first_available_attr(ds: pydicom.FileDataset, attrs: List[str]) -> object:
+    """回傳第一個存在且非空字串的屬性值；找不到則回傳空字串。"""
+    for attr in attrs:
+        value = getattr(ds, attr, "")
+        if value in ("", None):
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return ""
+
+
+def _extract_date_from_id(_id: str) -> str:
+    """從 case id 中擷取 YYYYMMDD（例如 '..._20251223_...' -> '20251223'）。"""
+    parts = str(_id).split("_")
+    for part in parts:
+        digits = "".join(ch for ch in part if ch.isdigit())
+        if len(digits) == 8:
+            return digits
+    return ""
 
 
 def _build_study_components(

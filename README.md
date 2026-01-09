@@ -281,6 +281,33 @@ python pipeline_followup.py \
   --upload_json
 ```
 
+#### （新入口）不提供任何 NIfTI：用 Pred/SynthSEG 的 DICOM-SEG + headers 反推 NIfTI
+
+> 只需要 **per-instance headers json（無 PixelData）** + **Pred/SynthSEG 的 DICOM-SEG（含 PixelData）**，腳本會在暫存目錄生成 `Pred_<model>.nii.gz` 與 `SynthSEG_<model>.nii.gz`，再呼叫既有 `pipeline_followup.py` 流程。\n
+
+```bash
+python pipeline_followup_from_dicomseg.py \
+  --baseline_ID "<Baseline_ID>" \
+  --baseline_pred_dicomseg "<Baseline_Pred_<model>.dcm>" \
+  --baseline_synthseg_dicomseg "<Baseline_SynthSEG_<model>.dcm>" \
+  --baseline_series_headers "<Baseline_series_headers.json>" \
+  --baseline_DicomDir "<Baseline_DICOM_Dir_or_empty>" \
+  --baseline_DicomSegDir "<Baseline_DicomSegDir>" \
+  --baseline_json "<Baseline_platform_json.json>" \
+  --followup_ID "<Followup_ID>" \
+  --followup_pred_dicomseg "<Followup_Pred_<model>.dcm>" \
+  --followup_synthseg_dicomseg "<Followup_SynthSEG_<model>.dcm>" \
+  --followup_series_headers "<Followup_series_headers.json>" \
+  --followup_DicomSegDir "<Followup_DicomSegDir>" \
+  --followup_json "<Followup_platform_json.json>" \
+  --path_output "<Output_Folder>" \
+  --model "CMB" \
+  --path_process "./process/Deep_FollowUp/" \
+  --path_log "./log/" \
+  --fsl_flirt_path "/usr/local/fsl/bin/flirt" \
+  --upload_json
+```
+
 #### 輸出（Follow-up）
 
 ```
