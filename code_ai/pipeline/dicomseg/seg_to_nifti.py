@@ -232,6 +232,49 @@ def load_series_headers_json(path: Union[str, Path]) -> List[Dict[str, Any]]:
     data = json.loads(p.read_text(encoding="utf-8"))
     if isinstance(data, dict) and "series_headers" in data and isinstance(data["series_headers"], list):
         return data["series_headers"]
+    # 支援 dicom_headers.json（本專案 followup 產生的格式）
+    if isinstance(data, dict) and isinstance(data.get("headers"), list):
+        out: List[Dict[str, Any]] = []
+
+        def _dicomweb_value(hdr: Dict[str, Any], tag: str) -> Any:
+            obj = hdr.get(tag)
+            if not isinstance(obj, dict):
+                return None
+            v = obj.get("Value")
+            if isinstance(v, list):
+                return v
+            return None
+
+        for item in data["headers"]:
+            if not isinstance(item, dict):
+                continue
+            hdr = item.get("header")
+            if not isinstance(hdr, dict):
+                continue
+
+            sop = item.get("sop_instance_uid")
+            if not sop:
+                sop_v = _dicomweb_value(hdr, "00080018")
+                sop = sop_v[0] if isinstance(sop_v, list) and sop_v else ""
+
+            ipp = _dicomweb_value(hdr, "00200032")
+            iop = _dicomweb_value(hdr, "00200037")
+            ps = _dicomweb_value(hdr, "00280030")
+            rows_v = _dicomweb_value(hdr, "00280010")
+            cols_v = _dicomweb_value(hdr, "00280011")
+
+            out.append(
+                {
+                    "SOPInstanceUID": sop,
+                    "ImagePositionPatient": ipp,
+                    "ImageOrientationPatient": iop,
+                    "PixelSpacing": ps,
+                    "Rows": rows_v[0] if isinstance(rows_v, list) and rows_v else None,
+                    "Columns": cols_v[0] if isinstance(cols_v, list) and cols_v else None,
+                }
+            )
+
+        return out
     if isinstance(data, list):
         return [x for x in data if isinstance(x, dict)]
     raise ValueError("series_headers.json 格式不支援（需為 list[dict] 或 {'series_headers': list[dict]}）")

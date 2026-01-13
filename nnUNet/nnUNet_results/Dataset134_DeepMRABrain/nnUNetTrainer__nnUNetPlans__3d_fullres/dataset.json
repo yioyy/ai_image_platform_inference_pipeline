@@ -1,0 +1,14 @@
+{
+    "TASK": "DeepMRABrain",
+    "No.": "134",
+    "channel_names": {
+        "0": "MRI_custom_normalize_1"
+    },
+    "labels": {
+        "background": 0,
+        "Aneurysm": 1
+    },
+    "numTraining": 2682,
+    "file_ending": ".nii.gz",
+    "val_as_test": "n"
+}

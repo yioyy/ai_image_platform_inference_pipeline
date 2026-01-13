@@ -1,0 +1,7 @@
+***Run inference like this:***
+
+nnUNetv2_predict -d Dataset015_DeepLacune -i INPUT_FOLDER -o OUTPUT_FOLDER -f  4 -tr nnUNetTrainer -c 2d -p nnUNetPlans
+
+***Once inference is completed, run postprocessing like this:***
+
+nnUNetv2_apply_postprocessing -i OUTPUT_FOLDER -o OUTPUT_FOLDER_PP -pp_pkl_file /data/chuan/nnUNet/nnUNet_results/Dataset015_DeepLacune/nnUNetTrainer__nnUNetPlans__2d/crossval_results_folds_4/postprocessing.pkl -np 8 -plans_json /data/chuan/nnUNet/nnUNet_results/Dataset015_DeepLacune/nnUNetTrainer__nnUNetPlans__2d/crossval_results_folds_4/plans.json

@@ -12,6 +12,7 @@ Follow-up pipeline (DICOM-SEG entry, zero-invasive).
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -34,15 +35,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--baseline_pred_dicomseg", required=True, help="baseline Pred 的 DICOM-SEG (.dcm)")
     p.add_argument("--baseline_synthseg_dicomseg", required=True, help="baseline SynthSEG DICOM-SEG (.dcm)")
     p.add_argument("--baseline_series_headers", required=True, help="baseline series per-instance headers json（無 PixelData）")
-    p.add_argument("--baseline_DicomDir", default="", help="可留空")
-    p.add_argument("--baseline_DicomSegDir", required=True)
     p.add_argument("--baseline_json", required=True)
 
     p.add_argument("--followup_ID", required=True)
     p.add_argument("--followup_pred_dicomseg", required=True, help="followup Pred 的 DICOM-SEG (.dcm)")
     p.add_argument("--followup_synthseg_dicomseg", required=True, help="followup SynthSEG DICOM-SEG (.dcm)")
     p.add_argument("--followup_series_headers", required=True, help="followup series per-instance headers json（無 PixelData）")
-    p.add_argument("--followup_DicomSegDir", required=True)
     p.add_argument("--followup_json", required=True)
 
     p.add_argument("--path_output", required=True)
@@ -56,6 +54,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--upload_json", action="store_true")
     p.add_argument("--overlap_mode", default="max", choices=["max", "overwrite"], help="SEG 重疊時的 label 合成規則")
     return p
+
+
+def _materialize_dicomseg_dir(*, out_dir: Path, dicomseg_files: List[Path]) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for f in dicomseg_files:
+        if not f.exists():
+            raise FileNotFoundError(f"找不到 DICOM-SEG 檔案：{f}")
+        shutil.copy2(f, out_dir / f.name)
+    return out_dir
 
 
 def main(argv: List[str]) -> int:
@@ -73,6 +80,14 @@ def main(argv: List[str]) -> int:
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
+        baseline_dicomseg_dir = _materialize_dicomseg_dir(
+            out_dir=td / "baseline_dicomseg",
+            dicomseg_files=[baseline_pred_seg, baseline_seg],
+        )
+        followup_dicomseg_dir = _materialize_dicomseg_dir(
+            out_dir=td / "followup_dicomseg",
+            dicomseg_files=[followup_pred_seg, followup_seg],
+        )
         baseline_pred = td / f"Pred_{args.model}_baseline.nii.gz"
         followup_pred = td / f"Pred_{args.model}_followup.nii.gz"
         baseline_syn = td / f"SynthSEG_{args.model}_baseline.nii.gz"
@@ -106,12 +121,12 @@ def main(argv: List[str]) -> int:
         pipeline_followup.pipeline_followup(
             baseline_ID=args.baseline_ID,
             baseline_Inputs=[str(baseline_pred), str(baseline_syn)],
-            baseline_DicomDir=args.baseline_DicomDir,
-            baseline_DicomSegDir=args.baseline_DicomSegDir,
+            baseline_DicomDir="",
+            baseline_DicomSegDir=str(baseline_dicomseg_dir),
             baseline_json=args.baseline_json,
             followup_ID=args.followup_ID,
             followup_Inputs=[str(followup_pred), str(followup_syn)],
-            followup_DicomSegDir=args.followup_DicomSegDir,
+            followup_DicomSegDir=str(followup_dicomseg_dir),
             followup_json=args.followup_json,
             path_output=args.path_output,
             model=args.model,
