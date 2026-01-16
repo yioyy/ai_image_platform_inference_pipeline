@@ -84,6 +84,23 @@ openspec archive add-ct-lung-nodule-detection --yes
 - 合併規格增量到 `openspec/specs/`
 - 更新系統真實規格
 
+## 🧩 模組導覽：Follow-up（baseline vs followup 比對）
+
+Follow-up 模組的目標是比較 baseline 與 followup 兩次檢查的 segmentation 結果（Pred 與 SynthSEG），完成影像對位後輸出：
+- `Pred_<model>_followup.nii.gz`（label 固定：1=new, 2=stable, 3=disappeared）
+- `Followup_<model>_platform_json.json`
+
+### 入口 1：file-oriented（既有流程）
+- **入口程式**：`radax/pipeline_followup.py`
+- **輸入**：baseline/followup 的 `Pred_<model>.nii.gz`、`SynthSEG_<model>.nii.gz`、`Pred_<model>_platform_json.json`
+- **關鍵規則**：配準前會用 SynthSEG 的 affine/sform/qform 覆蓋 Pred（shape 不一致會 fail-fast）
+- **對位工具**：FSL `flirt`
+
+### 入口 2：dicomseg-oriented（零侵入）
+- **入口程式**：`radax/pipeline_followup_from_dicomseg.py`
+- **輸入**：baseline/followup 的 Pred/SynthSEG DICOM-SEG + per-instance DICOM headers JSON（無 PixelData）
+- **行為**：先重建暫存 NIfTI，再呼叫 file-oriented 核心流程（不改動 `pipeline_followup.py`）
+
 ## 📝 規格增量格式
 
 規格增量使用以下格式：

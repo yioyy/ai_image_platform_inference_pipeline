@@ -49,6 +49,12 @@ import pathlib
 import requests
 from typing import Any, Dict, List, Optional
 
+# Optional env-file loader (for deploy/radax-test vs Deploy/radax official)
+try:
+    from config.load_env import load_env_from_default_locations
+except Exception:
+    load_env_from_default_locations = None
+
 
 #會使用到的一些predict技巧
 def data_translate(img, nii):
@@ -80,6 +86,24 @@ def case_json(json_file_path, ID):
 
     with open(json_file_path, 'w', encoding='utf8') as json_file:
         json.dump(json_dict, json_file, sort_keys=False, indent=2, separators=(',', ': '), ensure_ascii=False) #讓json能中文顯示
+
+
+def _clean_env_path(p: str) -> str:
+    return os.path.normpath(str(p).strip().replace("\r", "").replace("\n", ""))
+
+
+def _env_path(key: str, default: str) -> str:
+    v = os.getenv(key, "").strip()
+    return _clean_env_path(v) if v else _clean_env_path(default)
+
+
+def _get_api_url_from_env() -> str:
+    url = os.getenv("RADX_API_URL", "").strip()
+    if url:
+        return url
+    host = os.getenv("RADX_API_HOST", "localhost").strip() or "localhost"
+    port = os.getenv("RADX_API_PORT", "24000").strip() or "24000"
+    return f"http://{host}:{port}/v1/ai-inference/inference-complete"
 
 def pipeline_aneurysm(ID, 
                       MRA_BRAIN_file,  
@@ -557,10 +581,7 @@ def pipeline_aneurysm(ID,
                 logging.warning(f"[Skip] vessel seg missing or uid empty: {vessel_src_path}, uid={vessel_seg_uid}")
             
             # 發送POST請求到 /v1/ai-inference/inference-complete
-            # 請修改為正確的 API 端點，例如：
-            # api_url = 'http://localhost:8080/v1/ai-inference/inference-complete'
-            # api_url = 'http://10.103.1.193:3000/v1/ai-inference/inference-complete'
-            api_url = 'http://localhost:24000/v1/ai-inference/inference-complete'  # TO: 請修改為正確的 API 端點
+            api_url = _get_api_url_from_env()
 
             _post_inference_complete(
                 api_url=api_url,
@@ -585,7 +606,7 @@ def pipeline_aneurysm(ID,
             msg = "Insufficient GPU Memory"
 
             # 失敗也要建立 json 並上傳（依需求：result = failed，不帶 inferenceId）
-            api_url = 'http://localhost:24000/v1/ai-inference/inference-complete'  # TO: 請修改為正確的 API 端點
+            api_url = _get_api_url_from_env()
             study_instance_uid = _try_get_study_instance_uid_from_dicom_dir(path_outdcm)
             if not study_instance_uid:
                 logging.warning(f"[Failed notify] cannot resolve StudyInstanceUID from dicom dir: {path_outdcm}")
@@ -606,7 +627,7 @@ def pipeline_aneurysm(ID,
         logging.error("Catch an exception.", exc_info=True)
         # 發生例外也視為 inference 失敗，補送 failed（不帶 inferenceId）
         try:
-            api_url = 'http://localhost:24000/v1/ai-inference/inference-complete'  # TO: 請修改為正確的 API 端點
+            api_url = _get_api_url_from_env()
             study_instance_uid = _try_get_study_instance_uid_from_dicom_dir(path_outdcm)
             if not study_instance_uid:
                 logging.warning(f"[Failed notify] cannot resolve StudyInstanceUID from dicom dir: {path_outdcm}")
@@ -629,6 +650,13 @@ def pipeline_aneurysm(ID,
 
 #其意義是「模組名稱」。如果該檔案是被引用，其值會是模組名稱；但若該檔案是(透過命令列)直接執行，其值會是 __main__；。
 if __name__ == '__main__':
+    # Load env file (RADX_ENV_FILE or radax/config/radax.env) if present
+    if load_env_from_default_locations:
+        try:
+            load_env_from_default_locations()
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--ID', type=str, default = '17390820_20250604_MR_21406040004', help='目前執行的case的patient_id or study id')
     parser.add_argument('--Inputs', type=str, nargs='+', default = ['/data/4TB1/pipeline/chuan/example_input/17390820_20250604_MR_21406040004/MRA_BRAIN.nii.gz'], help='用於輸入的檔案')
@@ -647,19 +675,28 @@ if __name__ == '__main__':
 
     #需要安裝 pip install pylibjpeg pylibjpeg-libjpeg pylibjpeg-openjpeg => 先不壓縮，因為壓縮需要numpy > 2
 
-    #下面設定各個路徑
-    path_code = '/home/david/pipeline/chuan/radax/'
-    path_process = '/home/david/pipeline/chuan/process/'  #前處理dicom路徑(test case)
-    path_brain_model = '/home/david/pipeline/chuan/radax/nnUNet/nnUNet_results/Dataset134_DeepMRABrain/nnUNetTrainer__nnUNetPlans__3d_fullres'
-    path_vessel_model = '/home/david/pipeline/chuan/radax/nnUNet/nnUNet_results/Dataset135_DeepMRAVessel/nnUNetTrainer__nnUNetPlans__3d_fullres'
-    path_aneurysm_model = '/home/david/pipeline/chuan/radax/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres'    
-    path_processModel = os.path.join(path_process, 'Deep_Aneurysm')  #前處理dicom路徑(test case)
+    # 下面設定各個路徑（以環境設定檔/環境變數覆蓋）
+    path_code = _env_path("RADX_CODE_ROOT", "/home/david/pipeline/chuan/radax/")
+    path_process = _env_path("RADX_PROCESS_ROOT", "/home/david/pipeline/chuan/process/")  # 前處理 dicom 路徑
+    path_brain_model = _env_path(
+        "RADX_BRAIN_MODEL",
+        "/home/david/pipeline/chuan/radax/nnUNet/nnUNet_results/Dataset134_DeepMRABrain/nnUNetTrainer__nnUNetPlans__3d_fullres",
+    )
+    path_vessel_model = _env_path(
+        "RADX_VESSEL_MODEL",
+        "/home/david/pipeline/chuan/radax/nnUNet/nnUNet_results/Dataset135_DeepMRAVessel/nnUNetTrainer__nnUNetPlans__3d_fullres",
+    )
+    path_aneurysm_model = _env_path(
+        "RADX_ANEURYSM_MODEL",
+        "/home/david/pipeline/chuan/radax/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres",
+    )
+    path_processModel = os.path.join(path_process, "Deep_Aneurysm")
     #path_processID = os.path.join(path_processModel, ID)  #前處理dicom路徑(test case)
 
     #這裡先沒有dicom
-    path_json = '/home/david/pipeline/chuan/json/'  #存放json的路徑，回傳執行結果
+    path_json = _env_path("RADX_JSON_ROOT", "/home/david/pipeline/chuan/json/")  # 存放 json 的路徑
     #json_path_name = os.path.join(path_json, 'Pred_Infarct.json')
-    path_log = '/home/david/pipeline/chuan/log/'  #log資料夾
+    path_log = _env_path("RADX_LOG_ROOT", "/home/david/pipeline/chuan/log/")  # log 資料夾
 
     #自訂模型
     gpu_n = 0  #使用哪一顆gpu
