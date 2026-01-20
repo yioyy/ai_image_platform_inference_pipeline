@@ -445,7 +445,8 @@ def pipeline_aneurysm(ID,
             # shutil.copy(os.path.join(path_json_out_n, ID + '_platform_json.json'), os.path.join(path_output, 'Pred_Aneurysm_platform_json.json'))
 
             #radax步驟，接下來完成複製檔案到指定資料夾跟打api通知
-            upload_dir = '/home/david/ai-inference-result' #目的資料夾
+            # 目的資料夾（可由環境變數 RADX_UPLOAD_DIR 覆蓋）
+            upload_dir = _env_path("RADX_UPLOAD_DIR", "/home/david/ai-inference-result")
             aneurysm_json_file = os.path.join(path_nnunet, 'rdx_aneurysm_pred_json.json')
             vessel_json_file = os.path.join(path_nnunet, 'rdx_vessel_dilated_json.json')
             
