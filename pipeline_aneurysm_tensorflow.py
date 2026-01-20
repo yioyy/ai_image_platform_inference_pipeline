@@ -436,14 +436,6 @@ def pipeline_aneurysm(ID,
 
             # upload_json_aiteam(json_file_n)
 
-            #把json跟nii輸出到out資料夾，這裡只傳nnunet的結果，因為nnU-Net的結果比較好
-            # shutil.copy(os.path.join(path_nnunet, 'Pred.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm.nii.gz'))
-            # shutil.copy(os.path.join(path_nnunet, 'Prob.nii.gz'), os.path.join(path_output, 'Prob_Aneurysm.nii.gz'))
-            # shutil.copy(os.path.join(path_processID, 'Vessel.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm_Vessel.nii.gz'))
-            # shutil.copy(os.path.join(path_processID, 'Vessel_16.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm_Vessel16.nii.gz'))
-            # shutil.copy(os.path.join(path_json_out_n, ID + '_platform_json.json'), os.path.join(path_output, 'Pred_Aneurysm.json'))
-            # shutil.copy(os.path.join(path_json_out_n, ID + '_platform_json.json'), os.path.join(path_output, 'Pred_Aneurysm_platform_json.json'))
-
             #radax步驟，接下來完成複製檔案到指定資料夾跟打api通知
             # 目的資料夾（可由環境變數 RADX_UPLOAD_DIR 覆蓋）
             upload_dir = _env_path("RADX_UPLOAD_DIR", "/home/david/ai-inference-result")
@@ -591,6 +583,17 @@ def pipeline_aneurysm(ID,
                 vessel_inference_id=vessel_inference_id,
                 result="success",
             )
+
+            #把json跟nii輸出到out資料夾，這裡只傳nnunet的結果，因為nnU-Net的結果比較好
+            shutil.copy(os.path.join(path_nnunet, 'Pred.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm.nii.gz'))
+            shutil.copy(os.path.join(path_nnunet, 'Prob.nii.gz'), os.path.join(path_output, 'Prob_Aneurysm.nii.gz'))
+            shutil.copy(os.path.join(path_processID, 'Vessel.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm_Vessel.nii.gz'))
+            shutil.copy(os.path.join(path_processID, 'Vessel_16.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm_Vessel16.nii.gz'))
+            shutil.copy(os.path.join(path_nnunet, 'rdx_aneurysm_pred_json.json'), os.path.join(path_output, 'Pred_Aneurysm_rdx_aneurysm_pred_json.json'))
+            shutil.copy(os.path.join(path_nnunet, 'rdx_vessel_dilated_json.json'), os.path.join(path_output, 'Pred_Vessel_dilated_rdx_vessel_dilated_pred_json.json'))
+
+            #SynthSEG要複製到output資料夾
+            shutil.copy(os.path.join(path_nii_n, 'NEW_MRA_BRAIN_synthseg33.nii.gz'), os.path.join(path_output, 'SynthSEG_Aneurysm.nii.gz'))
 
             # #刪除資料夾
             # # if os.path.isdir(path_process):  #如果資料夾存在

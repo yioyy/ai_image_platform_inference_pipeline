@@ -18,14 +18,26 @@ v2 曾嘗試走 DICOM-SEG 還原 NIfTI，但流程繁瑣且不穩定。
 
 ## 資料來源與檔案命名
 ### Case 資料夾規則
+case 根目錄（輸入 NIfTI/JSON）：`/home/david/pipeline/sean/rename_nifti/`
 資料夾命名：`<patient_id>_<study_date>_MR_<access_number>`
 以 `patient_id + study_date` 進行定位（同日僅一個資料夾）。
 
+### Follow-up 輸出根目錄
+Follow-up 結果輸出至：`/home/david/pipeline/chuan/process/Deep_FollowUp/<current_case_id>/...`
+
 ### 需要的檔案（依模型命名）
-以 aneurysm 為預設模型（CMB 僅保留擴充性）：
+以模型名稱決定檔名（Aneurysm / CMB）：
 - `Pred_Aneurysm.nii.gz`
 - `SynthSEG_Aneurysm.nii.gz`
-- `nnUNet/rdx_aneurysm_pred_json.json`（輸出基底）
+- `Pred_Aneurysm_rdx_aneurysm_pred_json.json`（由 `rdx_aneurysm_pred_json.json` 改名，作為輸出基底）
+
+> 若為 CMB，檔名對應為 `Pred_CMB.nii.gz` / `SynthSEG_CMB.nii.gz` / `Pred_CMB_rdx_cmb_pred_json.json`
+> （如需不同 JSON 檔名，可透過參數覆蓋）。
+
+### 模型判定規則（由 input_json 推導）
+使用 `follow_up_input.json` 中的 `model_id` 判定模型：
+- `924d1538-597c-41d6-bc27-4b0b359111cf` → `Aneurysm`
+- `48c0cfa2-347b-4d32-aa74-a7b1e20dd2e6` → `CMB`
 
 ## 時序與比對規則
 1. 解析 `follow_up_input.json`：

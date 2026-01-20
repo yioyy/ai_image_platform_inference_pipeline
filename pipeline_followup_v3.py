@@ -35,6 +35,11 @@ from registration import run_registration_followup_to_baseline
 
 LOGGER = logging.getLogger(__name__)
 
+MODEL_BY_MODEL_ID = {
+    "924d1538-597c-41d6-bc27-4b0b359111cf": "Aneurysm",
+    "48c0cfa2-347b-4d32-aa74-a7b1e20dd2e6": "CMB",
+}
+
 
 @dataclass(frozen=True)
 class StudyItem:
@@ -63,9 +68,11 @@ def pipeline_followup_v3(
     input_json: Path,
     path_process: Path,
     model: str = "Aneurysm",
-    prediction_json_name: str = "rdx_aneurysm_pred_json.json",
+    prediction_json_name: Optional[str] = None,
+    path_followup_root: Optional[Path] = None,
     fsl_flirt_path: str = "/usr/local/fsl/bin/flirt",
 ) -> Path:
+    start_time = time.time()
     LOGGER.info("Load input json: %s", input_json)
     payload = _read_json(input_json)
     current_study = payload.get("current_study") or {}
@@ -73,6 +80,29 @@ def pipeline_followup_v3(
 
     if not isinstance(prior_list, list):
         raise ValueError("prior_study_list 必須為 list")
+
+    input_model_id = str(current_study.get("model_id") or "").strip()
+    resolved_model = _resolve_model_from_model_id(input_model_id)
+    for st in prior_list:
+        if not isinstance(st, dict):
+            continue
+        prior_model_id = str(st.get("model_id") or "").strip()
+        if not prior_model_id:
+            continue
+        prior_model = _resolve_model_from_model_id(prior_model_id)
+        if prior_model != resolved_model:
+            raise ValueError(
+                "prior_study_list model_id 對應的 model 不一致："
+                f"{prior_model_id} -> {prior_model} (expected {resolved_model})"
+            )
+    if model and model.strip() != resolved_model:
+        LOGGER.info("Override model=%s -> %s (by model_id)", model, resolved_model)
+    model = resolved_model
+    if not prediction_json_name:
+        if model == "CMB":
+            prediction_json_name = "Pred_CMB_rdx_cmb_pred_json.json"
+        else:
+            prediction_json_name = f"Pred_{model}_rdx_aneurysm_pred_json.json"
 
     LOGGER.info("Resolve current study -> case folder")
     current_item = _build_study_item(
@@ -97,7 +127,12 @@ def pipeline_followup_v3(
     if not comparisons:
         raise ValueError("找不到可比較的日期組合（current/prior 皆為同日或無資料）")
 
-    process_root = _build_process_root(path_process, current_item.case_id, model=model)
+    process_root = _build_process_root(
+        path_process,
+        current_item.case_id,
+        model=model,
+        path_followup_root=path_followup_root,
+    )
     comparisons_root = process_root / "comparisons"
     outputs_root = process_root / "outputs"
     LOGGER.info("Create process root: %s", process_root)
@@ -152,6 +187,9 @@ def pipeline_followup_v3(
     manifest_path = outputs_root / "followup_manifest.json"
     LOGGER.info("Write manifest: %s", manifest_path)
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    spend_sec = int(time.time() - start_time)
+    logging.info(f"[Done Follow-up v3 Pipeline!!! ] spend {spend_sec} sec")
+    logging.info(f"!!! {current_item.case_id} followup finish.")
     return manifest_path
 
 
@@ -444,10 +482,9 @@ def _build_study_item(
     study_date_key = _normalize_date_key(study_date_raw)
     case_dir = _find_case_dir(path_process, patient_id, study_date_key)
     case_id = case_dir.name
-    nnunet_dir = case_dir / "nnUNet"
-    pred_file = nnunet_dir / f"Pred_{model}.nii.gz"
-    synthseg_file = nnunet_dir / f"SynthSEG_{model}.nii.gz"
-    pred_json_file = nnunet_dir / prediction_json_name
+    pred_file = case_dir / f"Pred_{model}.nii.gz"
+    synthseg_file = case_dir / f"SynthSEG_{model}.nii.gz"
+    pred_json_file = case_dir / prediction_json_name
 
     _ensure_file(pred_file, "Pred NIfTI")
     _ensure_file(synthseg_file, "SynthSEG NIfTI")
@@ -469,9 +506,18 @@ def _build_study_item(
     )
 
 
-def _build_process_root(path_process: Path, current_case_id: str, *, model: str) -> Path:
-    base = Path(path_process)
-    root = base.parent if base.name in {"Deep_Radax", "Deep_Aneurysm"} else base
+def _build_process_root(
+    path_process: Path,
+    current_case_id: str,
+    *,
+    model: str,
+    path_followup_root: Optional[Path],
+) -> Path:
+    if path_followup_root:
+        root = Path(path_followup_root)
+    else:
+        base = Path(path_process)
+        root = base.parent if base.name in {"Deep_Radax", "Deep_Aneurysm"} else base
     model_key = model.strip().lower()
     if model_key == "aneurysm":
         model_dir = "Deep_Aneurysm"
@@ -501,6 +547,15 @@ def _normalize_date_key(date_str: str) -> str:
     if len(clean) == 8 and clean.isdigit():
         return clean
     raise ValueError(f"無法解析 study_date：{date_str}")
+
+
+def _resolve_model_from_model_id(model_id: str) -> str:
+    if not model_id:
+        raise ValueError("current_study.model_id 必填")
+    model = MODEL_BY_MODEL_ID.get(model_id)
+    if not model:
+        raise ValueError(f"不支援的 model_id（無法判定 model）：{model_id}")
+    return model
 
 
 def _ensure_study_date(payload: Dict[str, Any], study_date_raw: str) -> None:
@@ -583,13 +638,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--path_process",
-        default="/home/david/pipeline/chuan/process/Deep_Aneurysm",
-        help="Deep_Aneurysm 根目錄（case 資料夾所在處）",
+        default="/home/david/pipeline/sean/rename_nifti/",
+        help="case_id 根目錄（每個 case 資料夾內放 Pred/SynthSEG/JSON）",
+    )
+    p.add_argument(
+        "--path_followup_root",
+        default="/home/david/pipeline/chuan/process",
+        help="Follow-up 輸出根目錄（會建立 Deep_FollowUp/<case_id>/...）",
     )
     p.add_argument("--model", default="Aneurysm")
-    p.add_argument("--prediction_json_name", default="rdx_aneurysm_pred_json.json")
+    p.add_argument(
+        "--prediction_json_name",
+        default="",
+        help="prediction JSON 檔名（不填則依 inference_id 自動推導）",
+    )
     p.add_argument("--fsl_flirt_path", default="/usr/local/fsl/bin/flirt")
-    p.add_argument("--path_log", default="")
+    p.add_argument("--path_log", default="/home/david/pipeline/chuan/log")
     return p
 
 
@@ -608,15 +672,25 @@ def main(argv: List[str]) -> int:
         if not os.path.isfile(log_file):
             with open(log_file, "a+", encoding="utf-8") as f:
                 f.write("")
-        logging.basicConfig(level=logging.INFO, filename=log_file, filemode="a")
+        logging.basicConfig(
+            level=logging.INFO,
+            filename=log_file,
+            filemode="a",
+            format="%(asctime)s %(levelname)s %(message)s",
+        )
     else:
-        logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+        logging.basicConfig(
+            level=logging.INFO,
+            stream=sys.stdout,
+            format="%(asctime)s %(levelname)s %(message)s",
+        )
 
     manifest = pipeline_followup_v3(
         input_json=Path(args.input_json),
         path_process=Path(args.path_process),
         model=args.model,
-        prediction_json_name=args.prediction_json_name,
+        prediction_json_name=args.prediction_json_name or None,
+        path_followup_root=Path(args.path_followup_root) if args.path_followup_root else None,
         fsl_flirt_path=args.fsl_flirt_path,
     )
     print(f"[Done] manifest={manifest}")
