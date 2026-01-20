@@ -76,6 +76,35 @@ python pipeline_followup_from_dicomseg.py \
 
 ---
 
+## 1.2 Follow-up v3（多日期比較，JSON 導向）
+
+`pipeline_followup_v3.py` 以 `follow_up_input.json` 作為輸入，讀取 current + prior 多筆日期，
+自動找到對應 case 資料夾，並輸出 `followup_manifest.json` 與每個比較的
+`prediction-grouped.json`（保留既有 v1 過程檔）。
+
+### 輸入（follow_up_input.json）
+
+- `current_study`：當前日期（包含 `patient_id`、`study_date`、`inference_id`）
+- `prior_study_list`：多筆歷史日期
+
+### 主要輸出
+
+- `process/Deep_FollowUp/<current_case_id>/<model>/outputs/followup_manifest.json`
+- `process/Deep_FollowUp/<current_case_id>/<model>/outputs/<case_id>/prediction-grouped.json`
+
+### 示範命令
+
+```bash
+python pipeline_followup_v3.py \
+  --input_json "/path/to/follow_up_input.json" \
+  --path_process "/path/to/process/Deep_Aneurysm" \
+  --model "Aneurysm" \
+  --prediction_json_name "rdx_aneurysm_pred_json.json" \
+  --fsl_flirt_path "/usr/local/fsl/bin/flirt"
+```
+
+---
+
 ## 2. 執行方式
 
 ### 2.1 直接執行（命令列）
