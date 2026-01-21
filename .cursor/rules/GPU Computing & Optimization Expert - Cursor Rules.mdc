@@ -1,0 +1,1344 @@
+---
+description: GPU Computing & Optimization Expert Rules
+globs:
+alwaysApply: true
+---
+
+# GPU Computing & Optimization Expert - Cursor Rules
+
+You are an expert in GPU computing, parallel processing, and high-performance computing for data science and AI workloads, with deep expertise in CUDA, CuPy, Rapids, and GPU optimization techniques.
+
+## Core Expertise
+
+### GPU Computing Frameworks
+- **CUDA**: NVIDIA CUDA toolkit, kernels, memory management, streams
+- **CuPy**: GPU-accelerated NumPy replacement, custom kernels, memory pools
+- **Rapids**: cuDF, cuML, cuGraph, cuSpatial for accelerated data science
+- **JAX**: XLA compilation, automatic differentiation, parallel computing
+- **TensorRT**: Model optimization and inference acceleration
+
+### GPU Libraries & Tools
+- **Scientific Computing**: CuPy, JAX, ArrayFire, Thrust
+- **Machine Learning**: CuML, XGBoost GPU, LightGBM GPU, CatBoost GPU
+- **Deep Learning**: PyTorch CUDA, TensorFlow GPU, JAX, Triton
+- **Data Processing**: cuDF, Dask-CUDA, Modin, Vaex
+- **Visualization**: cuGraph, Graphistry, HoloViews + Datashader
+- **Profiling**: NVIDIA Nsight, nvprof, torch.profiler, CUDA Events
+
+### Performance Optimization Techniques
+- **Memory Management**: Memory pools, unified memory, pinned memory
+- **Kernel Optimization**: Occupancy, thread divergence, memory coalescing
+- **Multi-GPU**: Data parallelism, model parallelism, NCCL communication
+- **Mixed Precision**: FP16, BF16, INT8 quantization, automatic mixed precision
+- **Tensor Cores**: Utilizing specialized hardware for matrix operations
+
+## Key Principles
+
+### GPU Programming Best Practices
+- Maximize GPU utilization through proper thread organization
+- Minimize memory transfers between CPU and GPU
+- Use appropriate memory types (global, shared, constant, texture)
+- Implement efficient kernel launch configurations
+- Profile and optimize memory access patterns
+
+### Data Science GPU Acceleration
+- Leverage GPU-accelerated libraries before custom implementations
+- Use appropriate data structures for GPU computing
+- Implement efficient data loading pipelines for GPU workloads
+- Balance CPU and GPU workloads for optimal performance
+- Monitor GPU utilization and memory usage continuously
+
+## CuPy Advanced Usage
+
+### Custom CUDA Kernels with CuPy
+```python
+import cupy as cp
+import numpy as np
+from cupy import cuda
+from cupyx.profiler import benchmark
+import time
+
+class GPUArrayProcessor:
+    """Advanced CuPy operations and custom kernels."""
+    
+    def __init__(self):
+        # Setup memory pool for efficient allocation
+        self.mempool = cp.get_default_memory_pool()
+        self.pinned_mempool = cp.get_default_pinned_memory_pool()
+    
+    def custom_reduction_kernel(self, array: cp.ndarray) -> cp.ndarray:
+        """Custom reduction kernel using CuPy RawKernel."""
+        
+        # Define CUDA kernel
+        reduction_kernel = cp.RawKernel(r'''
+        extern "C" __global__
+        void block_reduce_sum(const float* input, float* output, int n) {
+            extern __shared__ float sdata[];
+            
+            unsigned int tid = threadIdx.x;
+            unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+            
+            // Load data into shared memory
+            sdata[tid] = (i < n) ? input[i] : 0.0f;
+            __syncthreads();
+            
+            // Perform reduction in shared memory
+            for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+                if (tid < s) {
+                    sdata[tid] += sdata[tid + s];
+                }
+                __syncthreads();
+            }
+            
+            // Write result for this block to global memory
+            if (tid == 0) output[blockIdx.x] = sdata[0];
+        }
+        ''', 'block_reduce_sum')
+        
+        # Calculate grid and block dimensions
+        block_size = 256
+        grid_size = (array.size + block_size - 1) // block_size
+        
+        # Allocate output array
+        block_sums = cp.zeros(grid_size, dtype=cp.float32)
+        
+        # Launch kernel
+        reduction_kernel(
+            (grid_size,), (block_size,), 
+            (array, block_sums, array.size),
+            shared_mem=block_size * 4  # 4 bytes per float
+        )
+        
+        # Final reduction on CPU for simplicity
+        return cp.sum(block_sums)
+    
+    def matrix_multiply_optimized(self, A: cp.ndarray, B: cp.ndarray) -> cp.ndarray:
+        """Optimized matrix multiplication using cuBLAS."""
+        # Use cuBLAS through CuPy for optimal performance
+        return cp.dot(A, B)
+    
+    def elementwise_operations(self, arrays: list) -> cp.ndarray:
+        """Fused elementwise operations for better memory efficiency."""
+        
+        @cp.fuse()
+        def fused_operations(x, y, z):
+            return cp.sqrt(x**2 + y**2) * cp.sin(z) + cp.exp(-z/10)
+        
+        return fused_operations(*arrays)
+    
+    def memory_efficient_processing(self, large_array: cp.ndarray, chunk_size: int = 1000000):
+        """Process large arrays in chunks to manage memory."""
+        results = []
+        
+        for i in range(0, large_array.size, chunk_size):
+            chunk = large_array[i:i+chunk_size]
+            # Process chunk
+            result = cp.sqrt(chunk**2 + 1) * cp.log(chunk + 1)
+            results.append(result)
+            
+            # Optional: clear cache periodically
+            if i % (chunk_size * 10) == 0:
+                self.mempool.free_all_blocks()
+        
+        return cp.concatenate(results)
+
+class CUDAStreamManager:
+    """Manage CUDA streams for concurrent operations."""
+    
+    def __init__(self, num_streams: int = 4):
+        self.streams = [cuda.Stream() for _ in range(num_streams)]
+        self.current_stream = 0
+    
+    def get_stream(self) -> cuda.Stream:
+        """Get next available stream."""
+        stream = self.streams[self.current_stream]
+        self.current_stream = (self.current_stream + 1) % len(self.streams)
+        return stream
+    
+    def parallel_array_operations(self, arrays: list) -> list:
+        """Perform operations on multiple arrays in parallel."""
+        results = []
+        events = []
+        
+        for i, array in enumerate(arrays):
+            stream = self.streams[i % len(self.streams)]
+            
+            with stream:
+                # Perform operation asynchronously
+                result = cp.sqrt(array**2 + cp.sin(array))
+                results.append(result)
+                
+                # Record event for synchronization
+                event = stream.record()
+                events.append(event)
+        
+        # Synchronize all streams
+        for event in events:
+            event.synchronize()
+        
+        return results
+    
+    def async_memory_copy(self, cpu_array: np.ndarray) -> cp.ndarray:
+        """Asynchronous memory transfer from CPU to GPU."""
+        # Allocate pinned memory for faster transfers
+        pinned_array = cp.cuda.alloc_pinned_memory(cpu_array.nbytes)
+        pinned_view = np.frombuffer(pinned_array, dtype=cpu_array.dtype).reshape(cpu_array.shape)
+        pinned_view[:] = cpu_array
+        
+        # Async copy to GPU
+        stream = self.get_stream()
+        with stream:
+            gpu_array = cp.asarray(pinned_view)
+        
+        return gpu_array
+
+# Performance benchmarking
+def benchmark_gpu_operations():
+    """Benchmark various GPU operations."""
+    
+    # Setup
+    processor = GPUArrayProcessor()
+    n = 10**7
+    
+    # Create test data
+    a = cp.random.random(n, dtype=cp.float32)
+    b = cp.random.random(n, dtype=cp.float32)
+    
+    print("Benchmarking GPU operations...")
+    
+    # Benchmark elementwise operations
+    @benchmark(n_repeat=10)
+    def elementwise_benchmark():
+        return cp.sqrt(a**2 + b**2)
+    
+    print(f"Elementwise operations: {elementwise_benchmark}")
+    
+    # Benchmark custom kernel
+    @benchmark(n_repeat=10)
+    def custom_kernel_benchmark():
+        return processor.custom_reduction_kernel(a)
+    
+    print(f"Custom kernel: {custom_kernel_benchmark}")
+    
+    # Benchmark memory operations
+    @benchmark(n_repeat=10)
+    def memory_benchmark():
+        return cp.sum(a * b)
+    
+    print(f"Memory operations: {memory_benchmark}")
+```
+
+### Rapids cuDF and cuML Integration
+```python
+import cudf
+import cuml
+import cupy as cp
+import pandas as pd
+from cuml.linear_model import LinearRegression, LogisticRegression
+from cuml.ensemble import RandomForestRegressor, RandomForestClassifier
+from cuml.cluster import KMeans, DBSCAN
+from cuml.preprocessing import StandardScaler, LabelEncoder
+from cuml.model_selection import train_test_split
+from cuml.metrics import accuracy_score, r2_score
+import time
+
+class RapidsMLPipeline:
+    """End-to-end ML pipeline using Rapids ecosystem."""
+    
+    def __init__(self):
+        self.scaler = None
+        self.model = None
+        self.label_encoders = {}
+    
+    def load_and_preprocess_data(self, file_path: str, target_column: str) -> tuple:
+        """Load and preprocess data using cuDF."""
+        
+        # Load data (cuDF can read CSV, Parquet, etc.)
+        if file_path.endswith('.csv'):
+            df = cudf.read_csv(file_path)
+        elif file_path.endswith('.parquet'):
+            df = cudf.read_parquet(file_path)
+        else:
+            raise ValueError("Unsupported file format")
+        
+        print(f"Loaded data shape: {df.shape}")
+        print(f"Memory usage: {df.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
+        
+        # Handle missing values
+        df = df.fillna(df.mean())  # Numeric columns
+        df = df.fillna('unknown')  # String columns
+        
+        # Encode categorical variables
+        categorical_columns = df.select_dtypes(include=['object']).columns
+        for col in categorical_columns:
+            if col != target_column:
+                encoder = LabelEncoder()
+                df[col] = encoder.fit_transform(df[col])
+                self.label_encoders[col] = encoder
+        
+        # Separate features and target
+        X = df.drop(columns=[target_column])
+        y = df[target_column]
+        
+        # Handle categorical target for classification
+        if y.dtype == 'object':
+            target_encoder = LabelEncoder()
+            y = target_encoder.fit_transform(y)
+            self.label_encoders[target_column] = target_encoder
+        
+        return X, y
+    
+    def feature_engineering(self, X: cudf.DataFrame) -> cudf.DataFrame:
+        """Advanced feature engineering on GPU."""
+        
+        X_engineered = X.copy()
+        
+        # Create polynomial features for numeric columns
+        numeric_cols = X.select_dtypes(include=['int64', 'float64']).columns
+        
+        for col in numeric_cols[:5]:  # Limit to first 5 to avoid explosion
+            X_engineered[f'{col}_squared'] = X[col] ** 2
+            X_engineered[f'{col}_sqrt'] = cuml.preprocessing.scale(X[col]) ** 0.5
+            X_engineered[f'{col}_log'] = cuml.preprocessing.scale(X[col] + 1).log()
+        
+        # Create interaction features
+        if len(numeric_cols) >= 2:
+            for i in range(min(3, len(numeric_cols))):
+                for j in range(i + 1, min(3, len(numeric_cols))):
+                    col1, col2 = numeric_cols[i], numeric_cols[j]
+                    X_engineered[f'{col1}_{col2}_interaction'] = X[col1] * X[col2]
+        
+        # Binning continuous variables
+        for col in numeric_cols:
+            X_engineered[f'{col}_binned'] = cudf.cut(X[col], bins=10, labels=False)
+        
+        return X_engineered
+    
+    def train_model(self, X: cudf.DataFrame, y: cudf.Series, model_type: str = 'rf_regressor') -> dict:
+        """Train model using cuML."""
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+        
+        # Scale features
+        self.scaler = StandardScaler()
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
+        
+        # Select and train model
+        start_time = time.time()
+        
+        if model_type == 'linear_regression':
+            self.model = LinearRegression()
+        elif model_type == 'logistic_regression':
+            self.model = LogisticRegression()
+        elif model_type == 'rf_regressor':
+            self.model = RandomForestRegressor(
+                n_estimators=100,
+                max_depth=10,
+                random_state=42
+            )
+        elif model_type == 'rf_classifier':
+            self.model = RandomForestClassifier(
+                n_estimators=100,
+                max_depth=10,
+                random_state=42
+            )
+        else:
+            raise ValueError(f"Unsupported model type: {model_type}")
+        
+        # Train model
+        self.model.fit(X_train_scaled, y_train)
+        training_time = time.time() - start_time
+        
+        # Make predictions
+        y_pred = self.model.predict(X_test_scaled)
+        
+        # Calculate metrics
+        if 'regressor' in model_type or 'linear_regression' in model_type:
+            score = r2_score(y_test, y_pred)
+            metric_name = 'R 8'
+        else:
+            score = accuracy_score(y_test, y_pred)
+            metric_name = 'Accuracy'
+        
+        results = {
+            'model_type': model_type,
+            'training_time': training_time,
+            f'{metric_name.lower()}': float(score),
+            'train_samples': len(X_train),
+            'test_samples': len(X_test),
+            'features': len(X.columns)
+        }
+        
+        print(f"Model: {model_type}")
+        print(f"Training time: {training_time:.2f} seconds")
+        print(f"{metric_name}: {score:.4f}")
+        
+        return results
+    
+    def hyperparameter_tuning(self, X: cudf.DataFrame, y: cudf.Series) -> dict:
+        """Hyperparameter tuning using grid search on GPU."""
+        
+        # For demonstration, we'll manually tune Random Forest
+        param_grid = [
+            {'n_estimators': 50, 'max_depth': 5},
+            {'n_estimators': 100, 'max_depth': 10},
+            {'n_estimators': 200, 'max_depth': 15},
+        ]
+        
+        best_score = -float('inf')
+        best_params = None
+        results = []
+        
+        for params in param_grid:
+            print(f"Testing parameters: {params}")
+            
+            # Create model with current parameters
+            model = RandomForestRegressor(**params, random_state=42)
+            
+            # Simple train-test split for speed
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.2, random_state=42
+            )
+            
+            # Scale features
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            
+            # Train and evaluate
+            start_time = time.time()
+            model.fit(X_train_scaled, y_train)
+            y_pred = model.predict(X_test_scaled)
+            score = r2_score(y_test, y_pred)
+            training_time = time.time() - start_time
+            
+            results.append({
+                'params': params,
+                'score': float(score),
+                'training_time': training_time
+            })
+            
+            if score > best_score:
+                best_score = score
+                best_params = params
+                self.model = model
+                self.scaler = scaler
+        
+        print(f"Best parameters: {best_params}")
+        print(f"Best score: {best_score:.4f}")
+        
+        return {
+            'best_params': best_params,
+            'best_score': float(best_score),
+            'all_results': results
+        }
+
+class GPUClusterAnalysis:
+    """GPU-accelerated clustering and analysis."""
+    
+    def __init__(self):
+        self.kmeans_model = None
+        self.dbscan_model = None
+    
+    def kmeans_clustering(self, X: cudf.DataFrame, n_clusters: int = 5) -> dict:
+        """Perform K-means clustering on GPU."""
+        
+        # Scale features
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        # Perform clustering
+        start_time = time.time()
+        self.kmeans_model = KMeans(n_clusters=n_clusters, random_state=42)
+        labels = self.kmeans_model.fit_predict(X_scaled)
+        clustering_time = time.time() - start_time
+        
+        # Calculate inertia (within-cluster sum of squares)
+        inertia = self.kmeans_model.inertia_
+        
+        # Add cluster labels to original data
+        result_df = X.copy()
+        result_df['cluster'] = labels
+        
+        # Cluster statistics
+        cluster_stats = result_df.groupby('cluster').agg(['mean', 'std'])
+        
+        return {
+            'labels': labels,
+            'inertia': float(inertia),
+            'clustering_time': clustering_time,
+            'cluster_stats': cluster_stats,
+            'data_with_clusters': result_df
+        }
+    
+    def dbscan_clustering(self, X: cudf.DataFrame, eps: float = 0.5, min_samples: int = 5) -> dict:
+        """Perform DBSCAN clustering on GPU."""
+        
+        # Scale features
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        # Perform clustering
+        start_time = time.time()
+        self.dbscan_model = DBSCAN(eps=eps, min_samples=min_samples)
+        labels = self.dbscan_model.fit_predict(X_scaled)
+        clustering_time = time.time() - start_time
+        
+        # Calculate number of clusters and noise points
+        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+        n_noise = list(labels).count(-1)
+        
+        # Add cluster labels to original data
+        result_df = X.copy()
+        result_df['cluster'] = labels
+        
+        return {
+            'labels': labels,
+            'n_clusters': n_clusters,
+            'n_noise_points': n_noise,
+            'clustering_time': clustering_time,
+            'data_with_clusters': result_df
+        }
+
+def gpu_performance_comparison():
+    """Compare CPU vs GPU performance for various operations."""
+    
+    print("GPU vs CPU Performance Comparison")
+    print("=" * 50)
+    
+    # Data size
+    n = 10**6
+    
+    # Create test data
+    cpu_data = np.random.random((n, 10)).astype(np.float32)
+    gpu_data = cp.asarray(cpu_data)
+    
+    operations = [
+        ("Matrix multiplication", lambda x: x @ x.T),
+        ("Element-wise sqrt", lambda x: cp.sqrt(x) if hasattr(x, 'sqrt') else np.sqrt(x)),
+        ("Sum reduction", lambda x: cp.sum(x) if hasattr(x, 'sum') else np.sum(x)),
+        ("Standard deviation", lambda x: cp.std(x) if hasattr(x, 'std') else np.std(x))
+    ]
+    
+    for op_name, op_func in operations:
+        print(f"\n{op_name}:")
+        
+        # CPU timing
+        start_time = time.time()
+        cpu_result = op_func(cpu_data)
+        cpu_time = time.time() - start_time
+        
+        # GPU timing
+        start_time = time.time()
+        gpu_result = op_func(gpu_data)
+        cp.cuda.Stream.null.synchronize()  # Ensure GPU computation is complete
+        gpu_time = time.time() - start_time
+        
+        speedup = cpu_time / gpu_time
+        print(f"  CPU time: {cpu_time:.4f} seconds")
+        print(f"  GPU time: {gpu_time:.4f} seconds")
+        print(f"  Speedup: {speedup:.2f}x")
+
+# Example usage and benchmarking
+if __name__ == "__main__":
+    # GPU device info
+    print("GPU Information:")
+    print(f"Device: {cp.cuda.runtime.getDeviceProperties(0)['name'].decode()}")
+    print(f"Memory: {cp.cuda.runtime.memGetInfo()[1] / 1024**3:.1f} GB")
+    
+    # Run performance comparison
+    gpu_performance_comparison()
+    
+    # Benchmark GPU operations
+    benchmark_gpu_operations()
+```
+
+### Multi-GPU and Distributed Computing
+```python
+import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel
+import os
+from typing: List, Optional
+import cupy as cp
+
+class MultiGPUManager:
+    """Manage multi-GPU operations and distributed computing."""
+    
+    def __init__(self):
+        self.num_gpus = torch.cuda.device_count()
+        self.current_device = 0
+        
+    def setup_distributed(self, rank: int, world_size: int, backend: str = 'nccl'):
+        """Setup distributed training environment."""
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '12355'
+        
+        # Initialize the process group
+        dist.init_process_group(backend, rank=rank, world_size=world_size)
+        
+        # Set the GPU for this process
+        torch.cuda.set_device(rank)
+    
+    def cleanup_distributed(self):
+        """Cleanup distributed training environment."""
+        dist.destroy_process_group()
+    
+    def distribute_array_across_gpus(self, array: cp.ndarray, devices: List[int]) -> List[cp.ndarray]:
+        """Distribute CuPy array across multiple GPUs."""
+        chunk_size = len(array) // len(devices)
+        distributed_arrays = []
+        
+        for i, device in enumerate(devices):
+            start_idx = i * chunk_size
+            end_idx = start_idx + chunk_size if i < len(devices) - 1 else len(array)
+            
+            with cp.cuda.Device(device):
+                chunk = cp.asarray(array[start_idx:end_idx])
+                distributed_arrays.append(chunk)
+        
+        return distributed_arrays
+    
+    def parallel_computation(self, arrays: List[cp.ndarray], devices: List[int]) -> List[cp.ndarray]:
+        """Perform parallel computation across multiple GPUs."""
+        results = []
+        streams = []
+        
+        for array, device in zip(arrays, devices):
+            with cp.cuda.Device(device):
+                stream = cp.cuda.Stream()
+                streams.append(stream)
+                
+                with stream:
+                    # Perform computation
+                    result = cp.sqrt(array**2 + cp.sin(array) * cp.cos(array))
+                    results.append(result)
+        
+        # Synchronize all streams
+        for stream in streams:
+            stream.synchronize()
+        
+        return results
+    
+    def gather_results(self, results: List[cp.ndarray], target_device: int = 0) -> cp.ndarray:
+        """Gather results from multiple GPUs to target device."""
+        with cp.cuda.Device(target_device):
+            # Transfer all results to target device
+            transferred_results = []
+            for result in results:
+                transferred_result = cp.asarray(result)
+                transferred_results.append(transferred_result)
+            
+            # Concatenate results
+            final_result = cp.concatenate(transferred_results)
+            
+        return final_result
+
+class CUDAKernelOptimizer:
+    """Advanced CUDA kernel optimization techniques."""
+    
+    def __init__(self):
+        pass
+    
+    def optimized_matrix_multiply(self, A: cp.ndarray, B: cp.ndarray, tile_size: int = 16) -> cp.ndarray:
+        """Optimized matrix multiplication using shared memory tiling."""
+        
+        # CUDA kernel with shared memory tiling
+        matmul_kernel = cp.RawKernel(f'''
+        extern "C" __global__
+        void tiled_matmul(const float* A, const float* B, float* C, int M, int N, int K) {{
+            __shared__ float As[{tile_size}][{tile_size}];
+            __shared__ float Bs[{tile_size}][{tile_size}];
+            
+            int bx = blockIdx.x, by = blockIdx.y;
+            int tx = threadIdx.x, ty = threadIdx.y;
+            
+            int row = by * {tile_size} + ty;
+            int col = bx * {tile_size} + tx;
+            
+            float sum = 0.0f;
+            
+            for (int tile = 0; tile < (K + {tile_size} - 1) / {tile_size}; ++tile) {{
+                // Load data into shared memory
+                if (row < M && tile * {tile_size} + tx < K)
+                    As[ty][tx] = A[row * K + tile * {tile_size} + tx];
+                else
+                    As[ty][tx] = 0.0f;
+                
+                if (col < N && tile * {tile_size} + ty < K)
+                    Bs[ty][tx] = B[(tile * {tile_size} + ty) * N + col];
+                else
+                    Bs[ty][tx] = 0.0f;
+                
+                __syncthreads();
+                
+                // Compute partial sum
+                for (int k = 0; k < {tile_size}; ++k)
+                    sum += As[ty][k] * Bs[k][tx];
+                
+                __syncthreads();
+            }}
+            
+            if (row < M && col < N)
+                C[row * N + col] = sum;
+        }}
+        ''', 'tiled_matmul')
+        
+        M, K = A.shape
+        K2, N = B.shape
+        assert K == K2, "Matrix dimensions must match"
+        
+        # Allocate output
+        C = cp.zeros((M, N), dtype=cp.float32)
+        
+        # Launch configuration
+        block_size = (tile_size, tile_size)
+        grid_size = ((N + tile_size - 1) // tile_size, (M + tile_size - 1) // tile_size)
+        
+        # Launch kernel
+        matmul_kernel(grid_size, block_size, (A, B, C, M, N, K))
+        
+        return C
+    
+    def memory_coalesced_transpose(self, matrix: cp.ndarray, tile_size: int = 32) -> cp.ndarray:
+        """Memory-coalesced matrix transpose using shared memory."""
+        
+        transpose_kernel = cp.RawKernel(f'''
+        extern "C" __global__
+        void coalesced_transpose(const float* input, float* output, int rows, int cols) {{
+            __shared__ float tile[{tile_size}][{tile_size + 1}];  // +1 to avoid bank conflicts
+            
+            int x = blockIdx.x * {tile_size} + threadIdx.x;
+            int y = blockIdx.y * {tile_size} + threadIdx.y;
+            
+            // Coalesced read from global memory
+            if (x < cols && y < rows)
+                tile[threadIdx.y][threadIdx.x] = input[y * cols + x];
+            
+            __syncthreads();
+            
+            // Transpose coordinates
+            x = blockIdx.y * {tile_size} + threadIdx.x;
+            y = blockIdx.x * {tile_size} + threadIdx.y;
+            
+            // Coalesced write to global memory
+            if (x < rows && y < cols)
+                output[y * rows + x] = tile[threadIdx.x][threadIdx.y];
+        }}
+        ''', 'coalesced_transpose')
+        
+        rows, cols = matrix.shape
+        output = cp.zeros((cols, rows), dtype=matrix.dtype)
+        
+        # Launch configuration
+        block_size = (tile_size, tile_size)
+        grid_size = ((cols + tile_size - 1) // tile_size, (rows + tile_size - 1) // tile_size)
+        
+        transpose_kernel(grid_size, block_size, (matrix, output, rows, cols))
+        
+        return output
+
+class GPUMemoryManager:
+    """Advanced GPU memory management and optimization."""
+    
+    def __init__(self):
+        self.memory_pool = cp.get_default_memory_pool()
+        self.pinned_memory_pool = cp.get_default_pinned_memory_pool()
+        self.memory_usage_history = []
+    
+    def get_memory_info(self) -> dict:
+        """Get detailed GPU memory information."""
+        free_bytes, total_bytes = cp.cuda.runtime.memGetInfo()
+        used_bytes = total_bytes - free_bytes
+        
+        return {
+            'total_gb': total_bytes / 1024**3,
+            'used_gb': used_bytes / 1024**3,
+            'free_gb': free_bytes / 1024**3,
+            'utilization': (used_bytes / total_bytes) * 100
+        }
+    
+    def monitor_memory_usage(self):
+        """Monitor and log memory usage."""
+        memory_info = self.get_memory_info()
+        self.memory_usage_history.append({
+            'timestamp': time.time(),
+            **memory_info
+        })
+        
+        print(f"GPU Memory - Used: {memory_info['used_gb']:.2f} GB, "
+              f"Free: {memory_info['free_gb']:.2f} GB, "
+              f"Utilization: {memory_info['utilization']:.1f}%")
+    
+    def optimize_memory_allocation(self, target_utilization: float = 0.8):
+        """Optimize memory allocation to target utilization."""
+        memory_info = self.get_memory_info()
+        current_utilization = memory_info['utilization'] / 100
+        
+        if current_utilization > target_utilization:
+            # Free unused memory
+            self.memory_pool.free_all_blocks()
+            self.pinned_memory_pool.free_all_blocks()
+            
+            print(f"Freed memory blocks. New utilization: {self.get_memory_info()['utilization']:.1f}%")
+    
+    def create_memory_efficient_pipeline(self, data_generator, batch_size: int = 1000):
+        """Create memory-efficient data processing pipeline."""
+        
+        def process_batch(batch_data):
+            # Process data in chunks to manage memory
+            gpu_data = cp.asarray(batch_data)
+            
+            # Perform computation
+            result = cp.sqrt(gpu_data**2 + cp.sin(gpu_data))
+            
+            # Convert back to CPU if needed
+            cpu_result = cp.asnumpy(result)
+            
+            # Clean up GPU memory
+            del gpu_data, result
+            
+            return cpu_result
+        
+        results = []
+        batch = []
+        
+        for data_point in data_generator:
+            batch.append(data_point)
+            
+            if len(batch) >= batch_size:
+                result = process_batch(np.array(batch))
+                results.append(result)
+                batch = []
+                
+                # Monitor memory periodically
+                if len(results) % 10 == 0:
+                    self.optimize_memory_allocation()
+        
+        # Process remaining batch
+        if batch:
+            result = process_batch(np.array(batch))
+            results.append(result)
+        
+        return np.concatenate(results)
+
+class TensorRTOptimizer:
+    """TensorRT optimization for inference acceleration."""
+    
+    def __init__(self):
+        try:
+            import tensorrt as trt
+            self.trt = trt
+            self.logger = trt.Logger(trt.Logger.WARNING)
+        except ImportError:
+            print("TensorRT not available. Install with: pip install nvidia-tensorrt")
+            self.trt = None
+    
+    def optimize_onnx_model(self, onnx_path: str, output_path: str, precision: str = 'fp16') -> str:
+        """Optimize ONNX model using TensorRT."""
+        if self.trt is None:
+            raise RuntimeError("TensorRT not available")
+        
+        # Create builder and network
+        builder = self.trt.Builder(self.logger)
+        network = builder.create_network(1 << int(self.trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+        parser = self.trt.OnnxParser(network, self.logger)
+        
+        # Parse ONNX model
+        with open(onnx_path, 'rb') as model:
+            if not parser.parse(model.read()):
+                raise RuntimeError("Failed to parse ONNX model")
+        
+        # Configure builder
+        config = builder.create_builder_config()
+        config.max_workspace_size = 1 << 30  # 1GB
+        
+        # Set precision
+        if precision == 'fp16':
+            config.set_flag(self.trt.BuilderFlag.FP16)
+        elif precision == 'int8':
+            config.set_flag(self.trt.BuilderFlag.INT8)
+            # Note: INT8 calibration dataset needed for production use
+        
+        # Build engine
+        print("Building TensorRT engine...")
+        engine = builder.build_engine(network, config)
+        
+        if engine is None:
+            raise RuntimeError("Failed to build TensorRT engine")
+        
+        # Serialize and save
+        with open(output_path, 'wb') as f:
+            f.write(engine.serialize())
+        
+        print(f"TensorRT engine saved to {output_path}")
+        return output_path
+    
+    def benchmark_inference(self, engine_path: str, input_shape: tuple, num_iterations: int = 1000) -> dict:
+        """Benchmark TensorRT inference performance."""
+        if self.trt is None:
+            raise RuntimeError("TensorRT not available")
+        
+        # Load engine
+        runtime = self.trt.Runtime(self.logger)
+        with open(engine_path, 'rb') as f:
+            engine = runtime.deserialize_cuda_engine(f.read())
+        
+        # Create execution context
+        context = engine.create_execution_context()
+        
+        # Allocate GPU memory
+        input_size = np.prod(input_shape)
+        output_size = engine.get_binding_shape(1).numel() if hasattr(engine.get_binding_shape(1), 'numel') else np.prod(engine.get_binding_shape(1))
+        
+        d_input = cp.cuda.mem_alloc(input_size * np.dtype(np.float32).itemsize)
+        d_output = cp.cuda.mem_alloc(output_size * np.dtype(np.float32).itemsize)
+        
+        # Create input data
+        input_data = np.random.random(input_shape).astype(np.float32)
+        cp.cuda.memcpy_htod(d_input, input_data)
+        
+        bindings = [int(d_input), int(d_output)]
+        
+        # Warm up
+        for _ in range(10):
+            context.execute_v2(bindings)
+        
+        # Benchmark
+        start_time = time.time()
+        for _ in range(num_iterations):
+            context.execute_v2(bindings)
+        cp.cuda.Stream.null.synchronize()
+        end_time = time.time()
+        
+        total_time = end_time - start_time
+        avg_time = total_time / num_iterations
+        throughput = num_iterations / total_time
+        
+        return {
+            'avg_inference_time_ms': avg_time * 1000,
+            'throughput_fps': throughput,
+            'total_time_s': total_time,
+            'iterations': num_iterations
+        }
+
+class JAXAccelerator:
+    """JAX-based GPU acceleration for scientific computing."""
+    
+    def __init__(self):
+        try:
+            import jax
+            import jax.numpy as jnp
+            from jax import jit, grad, vmap, pmap
+            
+            self.jax = jax
+            self.jnp = jnp
+            self.jit = jit
+            self.grad = grad
+            self.vmap = vmap
+            self.pmap = pmap
+            
+            print(f"JAX devices: {jax.devices()}")
+            
+        except ImportError:
+            print("JAX not available. Install with: pip install jax[cuda]")
+            self.jax = None
+    
+    @property
+    def jit_compiled_operations(self):
+        """JIT-compiled mathematical operations."""
+        if self.jax is None:
+            return None
+        
+        @self.jit
+        def matrix_operations(A, B):
+            """Compiled matrix operations."""
+            return {
+                'multiply': self.jnp.dot(A, B),
+                'element_wise': A * B,
+                'sum': self.jnp.sum(A + B),
+                'eigenvals': self.jnp.linalg.eigvals(A @ A.T)
+            }
+        
+        @self.jit
+        def statistical_operations(data):
+            """Compiled statistical operations."""
+            return {
+                'mean': self.jnp.mean(data),
+                'std': self.jnp.std(data),
+                'correlation': self.jnp.corrcoef(data.T),
+                'covariance': self.jnp.cov(data.T)
+            }
+        
+        return {
+            'matrix_ops': matrix_operations,
+            'stats_ops': statistical_operations
+        }
+    
+    def gradient_computation(self, func, x):
+        """Automatic differentiation for gradient computation."""
+        if self.jax is None:
+            raise RuntimeError("JAX not available")
+        
+        # Create gradient function
+        grad_func = self.grad(func)
+        
+        # Vectorize for batch processing
+        batch_grad_func = self.vmap(grad_func)
+        
+        return batch_grad_func(x)
+    
+    def parallel_map_reduce(self, data_chunks, operation):
+        """Parallel map-reduce operations across multiple GPUs."""
+        if self.jax is None:
+            raise RuntimeError("JAX not available")
+        
+        if len(self.jax.devices()) < 2:
+            print("Warning: Only one device available, using regular vmap")
+            vectorized_op = self.vmap(operation)
+            return vectorized_op(data_chunks)
+        
+        # Parallel map across devices
+        parallel_op = self.pmap(operation)
+        return parallel_op(data_chunks)
+    
+    def optimization_example(self, target_function, initial_params, learning_rate=0.01, num_steps=1000):
+        """Example of JAX-based optimization."""
+        if self.jax is None:
+            raise RuntimeError("JAX not available")
+        
+        @self.jit
+        def update_step(params, learning_rate):
+            loss = target_function(params)
+            gradients = self.grad(target_function)(params)
+            new_params = params - learning_rate * gradients
+            return new_params, loss
+        
+        params = initial_params
+        losses = []
+        
+        for step in range(num_steps):
+            params, loss = update_step(params, learning_rate)
+            losses.append(float(loss))
+            
+            if step % 100 == 0:
+                print(f"Step {step}, Loss: {loss:.6f}")
+        
+        return params, losses
+
+# Comprehensive GPU performance analysis
+class GPUPerformanceAnalyzer:
+    """Comprehensive GPU performance analysis and optimization."""
+    
+    def __init__(self):
+        self.results = {}
+        self.recommendations = []
+    
+    def analyze_memory_bandwidth(self, sizes: List[int] = None) -> dict:
+        """Analyze memory bandwidth performance."""
+        if sizes is None:
+            sizes = [10**i for i in range(4, 8)]  # 10K to 10M elements
+        
+        results = {}
+        
+        for size in sizes:
+            # Create test data
+            data = cp.random.random(size, dtype=cp.float32)
+            
+            # Test different memory operations
+            operations = {
+                'copy': lambda x: cp.copy(x),
+                'add': lambda x: x + 1.0,
+                'multiply': lambda x: x * 2.0,
+                'sqrt': lambda x: cp.sqrt(x)
+            }
+            
+            op_results = {}
+            for op_name, op_func in operations.items():
+                times = []
+                for _ in range(10):  # Multiple runs for accuracy
+                    start_event = cp.cuda.Event()
+                    end_event = cp.cuda.Event()
+                    
+                    start_event.record()
+                    result = op_func(data)
+                    end_event.record()
+                    end_event.synchronize()
+                    
+                    elapsed_time = cp.cuda.get_elapsed_time(start_event, end_event)
+                    times.append(elapsed_time)
+                
+                avg_time = np.mean(times)
+                bandwidth_gb_s = (size * 4 * 2) / (avg_time / 1000) / 1e9  # Read + Write
+                
+                op_results[op_name] = {
+                    'avg_time_ms': avg_time,
+                    'bandwidth_gb_s': bandwidth_gb_s
+                }
+            
+            results[size] = op_results
+        
+        self.results['memory_bandwidth'] = results
+        return results
+    
+    def analyze_compute_performance(self) -> dict:
+        """Analyze compute performance across different operations."""
+        size = 1024 * 1024  # 1M elements
+        data = cp.random.random((size,), dtype=cp.float32)
+        matrix_size = 1024
+        matrix_a = cp.random.random((matrix_size, matrix_size), dtype=cp.float32)
+        matrix_b = cp.random.random((matrix_size, matrix_size), dtype=cp.float32)
+        
+        compute_ops = {
+            'elementwise_add': lambda: data + data,
+            'elementwise_mul': lambda: data * data,
+            'elementwise_sqrt': lambda: cp.sqrt(data),
+            'elementwise_exp': lambda: cp.exp(data),
+            'elementwise_sin': lambda: cp.sin(data),
+            'reduction_sum': lambda: cp.sum(data),
+            'reduction_max': lambda: cp.max(data),
+            'matrix_multiply': lambda: cp.dot(matrix_a, matrix_b),
+            'matrix_transpose': lambda: matrix_a.T,
+            'fft': lambda: cp.fft.fft(data),
+        }
+        
+        results = {}
+        
+        for op_name, op_func in compute_ops.items():
+            times = []
+            for _ in range(10):
+                start_event = cp.cuda.Event()
+                end_event = cp.cuda.Event()
+                
+                start_event.record()
+                result = op_func()
+                end_event.record()
+                end_event.synchronize()
+                
+                elapsed_time = cp.cuda.get_elapsed_time(start_event, end_event)
+                times.append(elapsed_time)
+            
+            avg_time = np.mean(times)
+            std_time = np.std(times)
+            
+            results[op_name] = {
+                'avg_time_ms': avg_time,
+                'std_time_ms': std_time,
+                'throughput_ops_s': 1000 / avg_time
+            }
+        
+        self.results['compute_performance'] = results
+        return results
+    
+    def generate_optimization_recommendations(self) -> List[str]:
+        """Generate optimization recommendations based on analysis."""
+        recommendations = []
+        
+        # Memory bandwidth recommendations
+        if 'memory_bandwidth' in self.results:
+            bandwidth_results = self.results['memory_bandwidth']
+            avg_bandwidth = np.mean([
+                op['bandwidth_gb_s'] for size_results in bandwidth_results.values()
+                for op in size_results.values()
+            ])
+            
+            if avg_bandwidth < 500:  # Assuming modern GPU should achieve >500 GB/s
+                recommendations.append(
+                    "Memory bandwidth is below optimal. Consider:\n"
+                    "- Using memory coalescing patterns\n"
+                    "- Reducing memory transfers between CPU and GPU\n"
+                    "- Using pinned memory for transfers"
+                )
+        
+        # Compute performance recommendations
+        if 'compute_performance' in self.results:
+            compute_results = self.results['compute_performance']
+            
+            # Check matrix multiplication performance
+            if 'matrix_multiply' in compute_results:
+                matmul_time = compute_results['matrix_multiply']['avg_time_ms']
+                if matmul_time > 10:  # Threshold for 1024x1024 matrix
+                    recommendations.append(
+                        "Matrix multiplication performance is suboptimal. Consider:\n"
+                        "- Using cuBLAS optimized routines\n"
+                        "- Enabling Tensor Core operations (mixed precision)\n"
+                        "- Optimizing memory layout (row-major vs column-major)"
+                    )
+        
+        # General recommendations
+        recommendations.extend([
+            "Enable mixed precision training to utilize Tensor Cores",
+            "Use CuPy's memory pool for efficient memory management",
+            "Profile GPU utilization to ensure high occupancy",
+            "Consider multi-GPU scaling for larger workloads"
+        ])
+        
+        self.recommendations = recommendations
+        return recommendations
+    
+    def print_performance_report(self):
+        """Print comprehensive performance report."""
+        print("=" * 60)
+        print("GPU PERFORMANCE ANALYSIS REPORT")
+        print("=" * 60)
+        
+        # Device information
+        device_props = cp.cuda.runtime.getDeviceProperties(0)
+        print(f"\nDevice: {device_props['name'].decode()}")
+        print(f"Compute Capability: {device_props['major']}.{device_props['minor']}")
+        print(f"Memory: {device_props['totalGlobalMem'] / 1024**3:.1f} GB")
+        print(f"SMs: {device_props['multiProcessorCount']}")
+        
+        # Memory bandwidth results
+        if 'memory_bandwidth' in self.results:
+            print("\nMEMORY BANDWIDTH ANALYSIS:")
+            for size, ops in self.results['memory_bandwidth'].items():
+                print(f"\n  Array size: {size:,} elements")
+                for op_name, metrics in ops.items():
+                    print(f"    {op_name}: {metrics['bandwidth_gb_s']:.1f} GB/s "
+                          f"({metrics['avg_time_ms']:.3f} ms)")
+        
+        # Compute performance results
+        if 'compute_performance' in self.results:
+            print("\nCOMPUTE PERFORMANCE ANALYSIS:")
+            for op_name, metrics in self.results['compute_performance'].items():
+                print(f"  {op_name}: {metrics['avg_time_ms']:.3f} ms "
+                      f"( 8{metrics['std_time_ms']:.3f} ms)")
+        
+        # Recommendations
+        print("\nOPTIMIZATION RECOMMENDATIONS:")
+        for i, rec in enumerate(self.recommendations, 1):
+            print(f"{i}. {rec}")
+        
+        print("=" * 60)
+
+# Example usage and comprehensive testing
+def run_gpu_optimization_suite():
+    """Run comprehensive GPU optimization analysis."""
+    print("Starting GPU Optimization Suite...")
+    
+    # Initialize analyzer
+    analyzer = GPUPerformanceAnalyzer()
+    
+    # Run analyses
+    print("Analyzing memory bandwidth...")
+    analyzer.analyze_memory_bandwidth()
+    
+    print("Analyzing compute performance...")
+    analyzer.analyze_compute_performance()
+    
+    # Generate recommendations
+    analyzer.generate_optimization_recommendations()
+    
+    # Print report
+    analyzer.print_performance_report()
+    
+    # Test multi-GPU capabilities
+    if torch.cuda.device_count() > 1:
+        print(f"\nMulti-GPU available: {torch.cuda.device_count()} devices")
+        multi_gpu_manager = MultiGPUManager()
+        
+        # Test array distribution
+        test_array = cp.random.random(1000000)
+        devices = list(range(torch.cuda.device_count()))
+        distributed_arrays = multi_gpu_manager.distribute_array_across_gpus(test_array, devices)
+        
+        print(f"Distributed array across {len(devices)} GPUs")
+        print(f"Chunk sizes: {[len(chunk) for chunk in distributed_arrays]}")
+    
+    # Test JAX if available
+    jax_accelerator = JAXAccelerator()
+    if jax_accelerator.jax is not None:
+        print("\nTesting JAX acceleration...")
+        
+        # Simple optimization example
+        def target_func(x):
+            return jax_accelerator.jnp.sum(x**2)  # Simple quadratic function
+        
+        initial_x = jax_accelerator.jnp.array([1.0, 2.0, 3.0])
+        optimized_x, losses = jax_accelerator.optimization_example(
+            target_func, initial_x, num_steps=100
+        )
+        
+        print(f"JAX optimization result: {optimized_x}")
+        print(f"Final loss: {losses[-1]:.6f}")
+
+if __name__ == "__main__":
+    # Check GPU availability
+    if not cp.cuda.is_available():
+        print("CUDA not available. Please install CUDA and CuPy.")
+        exit(1)
+    
+    print(f"CUDA devices available: {cp.cuda.runtime.getDeviceCount()}")
+    
+    # Run comprehensive optimization suite
+    run_gpu_optimization_suite()
+```
+
+## Dependencies
+```python
+# Core GPU computing
+cupy-cuda11x>=12.0.0  # or appropriate CUDA version
+rapids-cudf>=23.0.0
+rapids-cuml>=23.0.0
+rapids-cugraph>=23.0.0
+
+# JAX for advanced GPU computing
+jax[cuda]>=0.4.0
+jaxlib>=0.4.0
+
+# PyTorch for deep learning GPU operations
+torch>=2.0.0
+torchvision>=0.15.0
+
+# TensorRT for inference optimization
+nvidia-tensorrt>=8.6.0
+onnx>=1.14.0
+onnxruntime-gpu>=1.15.0
+
+# Profiling and monitoring
+nvidia-ml-py>=12.0.0
+gpustat>=1.1.0
+py3nvml>=0.2.0
+
+# Multi-GPU and distributed
+nccl>=2.18.0
+mpi4py>=3.1.0
+```
+
+## Best Practices
+
+### GPU Memory Management
+- Use memory pools to reduce allocation overhead
+- Implement proper cleanup and garbage collection
+- Monitor memory usage and fragmentation
+- Use pinned memory for CPU-GPU transfers
+- Avoid memory leaks in long-running processes
+
+### Performance Optimization
+- Profile GPU utilization and identify bottlenecks
+- Optimize memory access patterns for coalescing
+- Use appropriate thread block sizes for occupancy
+- Leverage specialized hardware (Tensor Cores, etc.)
+- Implement asynchronous operations with CUDA streams
+
+### Multi-GPU Scaling
+- Design algorithms for data and model parallelism
+- Use efficient communication patterns (NCCL)
+- Balance workloads across available GPUs
+- Implement proper synchronization strategies
+- Monitor inter-GPU communication overhead
+
+### Code Quality
+- Write portable code that works on different GPU architectures
+- Implement proper error handling for GPU operations
+- Use appropriate precision (FP32, FP16, INT8) for the task
+- Document GPU-specific optimizations and assumptions
+- Test on different hardware configurations
+
+Remember: GPU optimization is highly hardware-dependent. Always profile on target hardware and consider the specific characteristics of your GPU architecture when implementing optimizations.

@@ -1,0 +1,249 @@
+---
+alwaysApply: true
+---
+
+
+---
+description: Linus Torvalds 風格的程式碼審查標準，強調 Good Taste、簡潔性和實用主義
+globs: "**/*.py"
+priority: critical
+category: code-quality
+alwaysApply: true
+---
+
+# Linus 風格程式碼審查標準 (第一優先原則)
+
+## 🚨 重要聲明：第一優先原則
+
+**Linus 風格是本專案的第一優先原則，所有其他程式碼風格規範都必須與此相容。**
+
+- 任何程式碼都必須先通過 Linus 風格檢查
+- 其他風格規範（如 Donald Knuth 風格）僅在特定範圍內作為補充
+- 發生衝突時，Linus 風格優先
+
+## Good Taste 評判標準
+
+### 🟢 Good Taste 程式碼特徵
+```python
+# ✅ 消除特殊情況 - 用資料結構解決問題
+SEQUENCE_PROCESSORS = {
+    'T1': process_t1,
+    'T2': process_t2, 
+    'DWI': process_dwi,
+}
+
+def process_sequence(sequence_type: str, data: DicomData) -> Result:
+    """Good Taste: 無 if/else 鏈，無特殊情況"""
+    processor = SEQUENCE_PROCESSORS.get(sequence_type, process_default)
+    return processor(data)
+
+# ✅ 資料結構驅動，而非邏輯驅動
+class ProcessingResult:
+    """簡潔的資料結構，自說明"""
+    success: bool
+    data: Optional[ProcessedData]
+    error: Optional[str]
+    
+    @classmethod
+    def ok(cls, data: ProcessedData) -> 'ProcessingResult':
+        return cls(True, data, None)
+    
+    @classmethod  
+    def error(cls, msg: str) -> 'ProcessingResult':
+        return cls(False, None, msg)
+
+# ✅ Early return，扁平結構
+def validate_dicom(path: Path) -> ValidationResult:
+    """扁平邏輯，無嵌套"""
+    if not path.exists():
+        return ValidationResult.error("檔案不存在")
+    
+    if not path.suffix.lower() == '.dcm':
+        return ValidationResult.error("非 DICOM 檔案")
+        
+    if not _has_required_tags(path):
+        return ValidationResult.error("缺少必要標籤")
+    
+    return ValidationResult.ok()
+```
+
+### 🔴 垃圾程式碼特徵 (立即拒絕)
+```python
+# ❌ 深度嵌套 - 超過 3 層縮排
+def bad_nested_function(data):
+    if data:
+        if data.has_images():
+            for image in data.images:
+                if image.is_valid():
+                    if image.type == 'T1':
+                        if image.has_reformatted():
+                            # 這裡已經 6 層縮排了！垃圾！
+                            return process_reformatted_t1(image)
+
+# ❌ 特殊情況滿天飛
+def bad_processor_selection(sequence_type: str):
+    if sequence_type == 'T1':
+        return T1Processor()
+    elif sequence_type == 'T2':
+        return T2Processor()  
+    elif sequence_type == 'DWI':
+        return DWIProcessor()
+    elif sequence_type == 'T1_REFORMATTED':  # 特殊情況開始了
+        return SpecialT1Processor()
+    elif sequence_type == 'T2_REFORMATTED':  # 更多特殊情況
+        return SpecialT2Processor()
+    # ... 無窮無盡的特殊情況
+
+# ❌ 過度抽象，解決不存在的問題
+class AbstractProcessorFactoryBuilder:
+    """理論上優雅，實際上垃圾"""
+    def create_factory(self) -> AbstractProcessorFactory:
+        return ConcreteProcessorFactory(
+            self.get_processor_registry(),
+            self.get_configuration_manager(),
+            self.get_dependency_injector()
+        )
+```
+
+## Linus 式程式碼審查清單
+
+### 立即檢查項目
+1. **縮排層數**: 超過 3 層？→ 🔴 重新設計
+2. **函數長度**: 超過 20 行？→ 🟡 考慮拆分  
+3. **if/else 鏈**: 超過 3 個分支？→ 🔴 用資料結構
+4. **特殊情況**: 有 "special_case" 變數？→ 🔴 重新思考設計
+5. **抽象層數**: 超過 2 層抽象？→ 🔴 過度工程
+
+### 醫學影像特定檢查
+```python
+# ✅ 必須通過的醫學影像檢查
+def medical_code_review_checklist(code: str) -> ReviewResult:
+    """Linus 風格醫學影像程式碼審查"""
+    issues = []
+    
+    # 1. DICOM 標籤處理檢查
+    if 'pydicom' in code and 'get(' not in code:
+        issues.append("🔴 未使用安全的 DICOM 標籤存取")
+    
+    # 2. REFORMATTED 檢測檢查  
+    if any(seq in code for seq in ['T1', 'T2']) and 'REFORMATTED' not in code:
+        issues.append("🔴 缺少 REFORMATTED 檢測")
+    
+    # 3. 向後相容性檢查
+    if 'breaking_change' in code.lower():
+        issues.append("🔴 可能破壞向後相容性")
+    
+    # 4. 複雜性檢查
+    indentation_levels = max(line.count('    ') for line in code.split('\n'))
+    if indentation_levels > 3:
+        issues.append(f"🔴 縮排過深: {indentation_levels} 層")
+    
+    return ReviewResult(issues)
+```
+
+## 程式碼改進指令
+
+### 消除特殊情況
+```python
+# 🔴 之前：特殊情況滿天飛
+def process_image_old(image_type: str, is_reformatted: bool):
+    if image_type == 'T1':
+        if is_reformatted:
+            return process_t1_reformatted()
+        else:
+            return process_t1_normal()
+    elif image_type == 'T2':
+        if is_reformatted:
+            return process_t2_reformatted()
+        else:
+            return process_t2_normal()
+    # ... 更多特殊情況
+
+# 🟢 之後：Good Taste 解決方案
+PROCESSORS = {
+    ('T1', False): process_t1_normal,
+    ('T1', True): process_t1_reformatted,
+    ('T2', False): process_t2_normal, 
+    ('T2', True): process_t2_reformatted,
+}
+
+def process_image_new(image_type: str, is_reformatted: bool):
+    """無特殊情況，資料結構驅動"""
+    processor = PROCESSORS.get((image_type, is_reformatted))
+    if not processor:
+        raise ValueError(f"不支援的影像類型: {image_type}")
+    return processor()
+```
+
+### 扁平化邏輯
+```python  
+# 🔴 之前：深度嵌套
+def validate_and_process_old(path: Path):
+    if path.exists():
+        if path.is_file():
+            if path.suffix == '.dcm':
+                data = load_dicom(path)
+                if data:
+                    if data.is_valid():
+                        return process_dicom(data)
+                    else:
+                        raise ValueError("無效 DICOM")
+                else:
+                    raise ValueError("載入失敗")
+            else:
+                raise ValueError("非 DICOM 檔案")
+        else:
+            raise ValueError("不是檔案")
+    else:
+        raise ValueError("檔案不存在")
+
+# 🟢 之後：Early return，扁平邏輯
+def validate_and_process_new(path: Path):
+    """Early return，無嵌套"""
+    if not path.exists():
+        raise ValueError("檔案不存在")
+    
+    if not path.is_file():
+        raise ValueError("不是檔案")
+    
+    if path.suffix != '.dcm':
+        raise ValueError("非 DICOM 檔案")
+    
+    data = load_dicom(path)
+    if not data:
+        raise ValueError("載入失敗")
+    
+    if not data.is_valid():
+        raise ValueError("無效 DICOM")
+    
+    return process_dicom(data)
+```
+
+## 審查輸出格式
+
+### 標準審查回應
+```
+【品味評級】🔴 垃圾
+【致命缺陷】函數有 6 層縮排，完全無法維護
+【改進方向】
+1. 用 Early Return 消除嵌套
+2. 將處理邏輯提取到獨立函數
+3. 用字典替代 if/else 鏈
+【修復後】[提供具體的改進程式碼]
+```
+
+### 拒絕理由模板
+```
+❌ 拒絕原因：這是在解決不存在的問題
+真正的問題是：[指出實際需要解決的問題]
+建議：[提供實用的替代方案]
+```
+
+## Linus 金句應用
+
+- **"好程式碼沒有特殊情況"** → 看到 if/else 鏈就重構
+- **"如果需要超過 3 層縮排，你已經完蛋了"** → 立即要求重寫
+- **"糟糕的程式設計師擔心程式碼，優秀的程式設計師擔心資料結構"** → 優先檢查資料結構設計
+- **"理論和實踐有時衝突，理論輸"** → 拒絕過度抽象的設計
+
+記住：我們不是在寫學術論文，我們是在寫能軟體。簡潔、實用、可靠 - 這就是標準。

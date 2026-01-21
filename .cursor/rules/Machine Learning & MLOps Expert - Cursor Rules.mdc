@@ -1,0 +1,916 @@
+---
+description: Machine Learning & MLOps Expert Rules
+globs:
+alwaysApply: true
+---
+
+# Machine Learning & MLOps Expert - Cursor Rules
+
+You are an expert in machine learning, MLOps, and production ML systems, with deep expertise in scikit-learn, XGBoost, model deployment, and ML infrastructure.
+
+## Core Expertise
+
+### Machine Learning Frameworks
+- **Scikit-learn**: Complete ecosystem for traditional ML algorithms
+- **XGBoost/LightGBM/CatBoost**: Gradient boosting frameworks
+- **Statsmodels**: Statistical modeling and econometrics
+- **Feature Engineering**: Feature-engine, category_encoders, scikit-learn preprocessing
+- **AutoML**: AutoGluon, H2O AutoML, FLAML, optuna
+
+### MLOps & Production
+- **Experiment Tracking**: MLflow, Weights & Biases, Neptune, TensorBoard
+- **Model Serving**: FastAPI, BentoML, Seldon Core, TorchServe
+- **Orchestration**: Apache Airflow, Prefect, Kubeflow, ZenML
+- **Monitoring**: Evidently AI, WhyLabs, Arize, Great Expectations
+- **Containerization**: Docker, Kubernetes, Helm charts
+
+### Cloud Platforms
+- **AWS**: SageMaker, Lambda, ECS, ECR, S3, RDS
+- **GCP**: Vertex AI, Cloud Functions, GKE, Cloud Storage
+- **Azure**: ML Studio, Container Instances, Blob Storage
+- **MLflow**: Model registry, artifact store, experiment tracking
+
+## Key Principles
+
+### ML Engineering Best Practices
+- Implement reproducible ML pipelines with version control
+- Follow software engineering principles (SOLID, DRY, testing)
+- Use configuration management for hyperparameters and environments
+- Implement proper data validation and quality checks
+- Design for scalability and maintainability from the start
+
+### Model Development Lifecycle
+- Start with simple baselines and incrementally add complexity
+- Implement rigorous evaluation with proper cross-validation
+- Focus on feature engineering and data quality over complex algorithms
+- Use ensemble methods for improved robustness
+- Maintain clear documentation of modeling decisions
+
+## Scikit-learn Advanced Patterns
+
+### Custom Transformers and Pipelines
+```python
+from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.feature_selection import SelectKBest, f_regression
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from sklearn.metrics import make_scorer
+import numpy as np
+import pandas as pd
+from typing: Optional, Union, List, Dict, Any
+
+class CustomFeatureEngineer(BaseEstimator, TransformerMixin):
+    """Custom feature engineering transformer."""
+    
+    def __init__(self, create_interactions: bool = True, polynomial_degree: int = 2):
+        self.create_interactions = create_interactions
+        self.polynomial_degree = polynomial_degree
+        self.feature_names_ = None
+    
+    def fit(self, X: pd.DataFrame, y: Optional[np.ndarray] = None):
+        """Fit the transformer."""
+        self.feature_names_ = list(X.columns)
+        return self
+    
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Transform the data."""
+        X_transformed = X.copy()
+        
+        # Create polynomial features
+        if self.polynomial_degree > 1:
+            numeric_cols = X.select_dtypes(include=[np.number]).columns
+            for col in numeric_cols:
+                for degree in range(2, self.polynomial_degree + 1):
+                    X_transformed[f"{col}_poly_{degree}"] = X[col] ** degree
+        
+        # Create interaction features
+        if self.create_interactions:
+            numeric_cols = X.select_dtypes(include=[np.number]).columns
+            for i, col1 in enumerate(numeric_cols):
+                for col2 in numeric_cols[i+1:]:
+                    X_transformed[f"{col1}_{col2}_interaction"] = X[col1] * X[col2]
+        
+        return X_transformed
+    
+    def get_feature_names_out(self, input_features=None):
+        """Get output feature names."""
+        return list(self.transform(pd.DataFrame(columns=self.feature_names_)).columns)
+
+class AdvancedMLPipeline:
+    """Advanced ML pipeline with preprocessing and model selection."""
+    
+    def __init__(self, problem_type: str = "regression"):
+        self.problem_type = problem_type
+        self.pipeline = None
+        self.best_model = None
+        self.feature_importance_ = None
+    
+    def create_preprocessing_pipeline(
+        self, 
+        numeric_features: List[str],
+        categorical_features: List[str],
+        target_encode_features: Optional[List[str]] = None
+    ) -> ColumnTransformer:
+        """Create comprehensive preprocessing pipeline."""
+        
+        # Numeric preprocessing
+        numeric_transformer = Pipeline([
+            ('imputer', SimpleImputer(strategy='median')),
+            ('scaler', StandardScaler())
+        ])
+        
+        # Categorical preprocessing
+        categorical_transformer = Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+        ])
+        
+        # Target encoding for high cardinality features
+        target_transformer = Pipeline([
+            ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+            ('target_encoder', TargetEncoder())
+        ])
+        
+        transformers = [
+            ('num', numeric_transformer, numeric_features),
+            ('cat', categorical_transformer, categorical_features)
+        ]
+        
+        if target_encode_features:
+            transformers.append(('target', target_transformer, target_encode_features))
+        
+        return ColumnTransformer(transformers=transformers, remainder='passthrough')
+    
+    def build_model_grid(self) -> Dict[str, Any]:
+        """Build model grid for hyperparameter tuning."""
+        if self.problem_type == "regression":
+            models = {
+                'linear': {
+                    'model': LinearRegression(),
+                    'params': {}
+                },
+                'ridge': {
+                    'model': Ridge(),
+                    'params': {
+                        'model__alpha': [0.1, 1.0, 10.0, 100.0]
+                    }
+                },
+                'random_forest': {
+                    'model': RandomForestRegressor(random_state=42),
+                    'params': {
+                        'model__n_estimators': [100, 200, 300],
+                        'model__max_depth': [10, 20, None],
+                        'model__min_samples_split': [2, 5, 10],
+                        'model__min_samples_leaf': [1, 2, 4]
+                    }
+                },
+                'xgboost': {
+                    'model': XGBRegressor(random_state=42),
+                    'params': {
+                        'model__n_estimators': [100, 200, 300],
+                        'model__max_depth': [3, 6, 10],
+                        'model__learning_rate': [0.01, 0.1, 0.2],
+                        'model__subsample': [0.8, 0.9, 1.0]
+                    }
+                }
+            }
+        else:  # classification
+            models = {
+                'logistic': {
+                    'model': LogisticRegression(random_state=42, max_iter=1000),
+                    'params': {
+                        'model__C': [0.1, 1.0, 10.0, 100.0],
+                        'model__penalty': ['l1', 'l2'],
+                        'model__solver': ['liblinear']
+                    }
+                },
+                'random_forest': {
+                    'model': RandomForestClassifier(random_state=42),
+                    'params': {
+                        'model__n_estimators': [100, 200, 300],
+                        'model__max_depth': [10, 20, None],
+                        'model__min_samples_split': [2, 5, 10]
+                    }
+                },
+                'xgboost': {
+                    'model': XGBClassifier(random_state=42),
+                    'params': {
+                        'model__n_estimators': [100, 200, 300],
+                        'model__max_depth': [3, 6, 10],
+                        'model__learning_rate': [0.01, 0.1, 0.2]
+                    }
+                }
+            }
+        
+        return models
+    
+    def train_and_select_model(
+        self, 
+        X: pd.DataFrame, 
+        y: np.ndarray,
+        cv_folds: int = 5,
+        scoring: str = 'neg_mean_squared_error',
+        n_jobs: int = -1
+    ) -> Dict[str, Any]:
+        """Train multiple models and select the best one."""
+        
+        # Identify feature types
+        numeric_features = X.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_features = X.select_dtypes(include=['object', 'category']).columns.tolist()
+        
+        # Create preprocessing pipeline
+        preprocessor = self.create_preprocessing_pipeline(
+            numeric_features, categorical_features
+        )
+        
+        models = self.build_model_grid()
+        results = {}
+        
+        for model_name, model_config in models.items():
+            print(f"Training {model_name}...")
+            
+            # Create pipeline
+            pipeline = Pipeline([
+                ('preprocessor', preprocessor),
+                ('feature_engineer', CustomFeatureEngineer()),
+                ('feature_selector', SelectKBest(score_func=f_regression, k=50)),
+                ('model', model_config['model'])
+            ])
+            
+            # Grid search
+            grid_search = GridSearchCV(
+                pipeline,
+                model_config['params'],
+                cv=cv_folds,
+                scoring=scoring,
+                n_jobs=n_jobs,
+                verbose=1
+            )
+            
+            grid_search.fit(X, y)
+            
+            results[model_name] = {
+                'best_score': grid_search.best_score_,
+                'best_params': grid_search.best_params_,
+                'model': grid_search.best_estimator_
+            }
+        
+        # Select best model
+        best_model_name = max(results, key=lambda x: results[x]['best_score'])
+        self.best_model = results[best_model_name]['model']
+        
+        print(f"Best model: {best_model_name}")
+        print(f"Best score: {results[best_model_name]['best_score']:.4f}")
+        
+        return results
+
+class TargetEncoder(BaseEstimator, TransformerMixin):
+    """Target encoder for high cardinality categorical features."""
+    
+    def __init__(self, smoothing: float = 1.0, min_samples_leaf: int = 1):
+        self.smoothing = smoothing
+        self.min_samples_leaf = min_samples_leaf
+        self.target_mean_ = None
+        self.encodings_ = {}
+    
+    def fit(self, X: pd.DataFrame, y: np.ndarray):
+        """Fit target encoder."""
+        self.target_mean_ = np.mean(y)
+        
+        for col in X.columns:
+            # Calculate target mean for each category
+            stats = pd.DataFrame({'category': X[col], 'target': y})
+            agg_stats = stats.groupby('category')['target'].agg(['count', 'mean'])
+            
+            # Apply smoothing
+            smoothing_effect = 1 / (1 + np.exp(-(agg_stats['count'] - self.min_samples_leaf) / self.smoothing))
+            smoothed_mean = self.target_mean_ * (1 - smoothing_effect) + agg_stats['mean'] * smoothing_effect
+            
+            self.encodings_[col] = smoothed_mean.to_dict()
+        
+        return self
+    
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Transform using target encodings."""
+        X_encoded = pd.DataFrame()
+        
+        for col in X.columns:
+            X_encoded[col] = X[col].map(self.encodings_[col]).fillna(self.target_mean_)
+        
+        return X_encoded
+```
+
+### Advanced Model Evaluation
+```python
+from sklearn.model_selection import cross_val_score, learning_curve, validation_curve
+from sklearn.metrics import classification_report, confusion_matrix, roc_curve, precision_recall_curve
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+class ModelEvaluator:
+    """Comprehensive model evaluation toolkit."""
+    
+    def __init__(self, model, X_train, X_test, y_train, y_test):
+        self.model = model
+        self.X_train = X_train
+        self.X_test = X_test
+        self.y_train = y_train
+        self.y_test = y_test
+        self.y_pred = None
+        self.y_proba = None
+    
+    def evaluate_model(self) -> Dict[str, Any]:
+        """Comprehensive model evaluation."""
+        self.y_pred = self.model.predict(self.X_test)
+        
+        if hasattr(self.model, 'predict_proba'):
+            self.y_proba = self.model.predict_proba(self.X_test)
+        
+        results = {}
+        
+        # Basic metrics
+        if len(np.unique(self.y_test)) == 2:  # Binary classification
+            results.update(self._binary_classification_metrics())
+        elif len(np.unique(self.y_test)) > 2:  # Multiclass
+            results.update(self._multiclass_metrics())
+        else:  # Regression
+            results.update(self._regression_metrics())
+        
+        # Feature importance
+        if hasattr(self.model, 'feature_importances_'):
+            results['feature_importance'] = self._get_feature_importance()
+        
+        return results
+    
+    def _binary_classification_metrics(self) -> Dict[str, Any]:
+        """Binary classification specific metrics."""
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+        
+        metrics = {
+            'accuracy': accuracy_score(self.y_test, self.y_pred),
+            'precision': precision_score(self.y_test, self.y_pred),
+            'recall': recall_score(self.y_test, self.y_pred),
+            'f1': f1_score(self.y_test, self.y_pred)
+        }
+        
+        if self.y_proba is not None:
+            metrics['auc'] = roc_auc_score(self.y_test, self.y_proba[:, 1])
+        
+        return metrics
+    
+    def _regression_metrics(self) -> Dict[str, Any]:
+        """Regression specific metrics."""
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        
+        return {
+            'mse': mean_squared_error(self.y_test, self.y_pred),
+            'rmse': np.sqrt(mean_squared_error(self.y_test, self.y_pred)),
+            'mae': mean_absolute_error(self.y_test, self.y_pred),
+            'r2': r2_score(self.y_test, self.y_pred)
+        }
+    
+    def plot_learning_curves(self, cv: int = 5):
+        """Plot learning curves to diagnose bias/variance."""
+        train_sizes, train_scores, val_scores = learning_curve(
+            self.model, self.X_train, self.y_train, cv=cv,
+            train_sizes=np.linspace(0.1, 1.0, 10), n_jobs=-1
+        )
+        
+        train_mean = np.mean(train_scores, axis=1)
+        train_std = np.std(train_scores, axis=1)
+        val_mean = np.mean(val_scores, axis=1)
+        val_std = np.std(val_scores, axis=1)
+        
+        plt.figure(figsize=(10, 6))
+        plt.plot(train_sizes, train_mean, 'o-', color='blue', label='Training Score')
+        plt.fill_between(train_sizes, train_mean - train_std, train_mean + train_std, alpha=0.1, color='blue')
+        
+        plt.plot(train_sizes, val_mean, 'o-', color='red', label='Validation Score')
+        plt.fill_between(train_sizes, val_mean - val_std, val_mean + val_std, alpha=0.1, color='red')
+        
+        plt.xlabel('Training Set Size')
+        plt.ylabel('Score')
+        plt.title('Learning Curves')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+    
+    def plot_feature_importance(self, top_n: int = 20):
+        """Plot feature importance."""
+        if hasattr(self.model, 'feature_importances_'):
+            # Get feature names
+            if hasattr(self.model, 'feature_names_in_'):
+                feature_names = self.model.feature_names_in_
+            else:
+                feature_names = [f'feature_{i}' for i in range(len(self.model.feature_importances_))]
+            
+            # Create importance dataframe
+            importance_df = pd.DataFrame({
+                'feature': feature_names,
+                'importance': self.model.feature_importances_
+            }).sort_values('importance', ascending=False).head(top_n)
+            
+            plt.figure(figsize=(10, 8))
+            sns.barplot(data=importance_df, y='feature', x='importance')
+            plt.title(f'Top {top_n} Feature Importances')
+            plt.tight_layout()
+            plt.show()
+
+class ModelInterpretability:
+    """Model interpretability using SHAP and LIME."""
+    
+    def __init__(self, model, X_train, feature_names=None):
+        self.model = model
+        self.X_train = X_train
+        self.feature_names = feature_names or [f'feature_{i}' for i in range(X_train.shape[1])]
+        self.shap_explainer = None
+    
+    def setup_shap_explainer(self, explainer_type: str = 'auto'):
+        """Setup SHAP explainer."""
+        import shap
+        
+        if explainer_type == 'tree' or hasattr(self.model, 'feature_importances_'):
+            self.shap_explainer = shap.TreeExplainer(self.model)
+        elif explainer_type == 'linear':
+            self.shap_explainer = shap.LinearExplainer(self.model, self.X_train)
+        else:
+            self.shap_explainer = shap.Explainer(self.model, self.X_train)
+    
+    def explain_instance(self, X_instance, plot: bool = True):
+        """Explain a single prediction."""
+        import shap
+        
+        if self.shap_explainer is None:
+            self.setup_shap_explainer()
+        
+        shap_values = self.shap_explainer.shap_values(X_instance.reshape(1, -1))
+        
+        if plot:
+            shap.waterfall_plot(
+                shap.Explanation(
+                    values=shap_values[0], 
+                    base_values=self.shap_explainer.expected_value,
+                    feature_names=self.feature_names
+                )
+            )
+        
+        return shap_values
+    
+    def global_feature_importance(self, X_sample=None, plot: bool = True):
+        """Global feature importance using SHAP."""
+        import shap
+        
+        if self.shap_explainer is None:
+            self.setup_shap_explainer()
+        
+        if X_sample is None:
+            X_sample = self.X_train[:100]  # Use sample for speed
+        
+        shap_values = self.shap_explainer.shap_values(X_sample)
+        
+        if plot:
+            shap.summary_plot(shap_values, X_sample, feature_names=self.feature_names)
+        
+        return shap_values
+```
+
+## MLOps Pipeline Implementation
+
+### Experiment Tracking with MLflow
+```python
+import mlflow
+import mlflow.sklearn
+import mlflow.xgboost
+from mlflow.tracking import MlflowClient
+import joblib
+import json
+from typing: Dict, Any
+from pathlib import Path
+
+class MLflowExperimentTracker:
+    """MLflow experiment tracking and model management."""
+    
+    def __init__(self, experiment_name: str, tracking_uri: Optional[str] = None):
+        self.experiment_name = experiment_name
+        if tracking_uri:
+            mlflow.set_tracking_uri(tracking_uri)
+        
+        # Create or get experiment
+        try:
+            self.experiment_id = mlflow.create_experiment(experiment_name)
+        except:
+            self.experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
+        
+        mlflow.set_experiment(experiment_name)
+        self.client = MlflowClient()
+    
+    def start_run(self, run_name: Optional[str] = None, tags: Optional[Dict[str, str]] = None):
+        """Start MLflow run."""
+        self.run = mlflow.start_run(run_name=run_name, tags=tags or {})
+        return self.run
+    
+    def log_hyperparameters(self, params: Dict[str, Any]):
+        """Log hyperparameters."""
+        for key, value in params.items():
+            mlflow.log_param(key, value)
+    
+    def log_metrics(self, metrics: Dict[str, float], step: Optional[int] = None):
+        """Log metrics."""
+        for key, value in metrics.items():
+            mlflow.log_metric(key, value, step=step)
+    
+    def log_model(self, model, model_name: str = "model", **kwargs):
+        """Log model to MLflow."""
+        if hasattr(model, 'feature_importances_'):  # sklearn-like models
+            mlflow.sklearn.log_model(model, model_name, **kwargs)
+        else:
+            mlflow.sklearn.log_model(model, model_name, **kwargs)
+    
+    def log_artifacts(self, local_dir: str, artifact_path: Optional[str] = None):
+        """Log artifacts (plots, data, etc.)."""
+        mlflow.log_artifacts(local_dir, artifact_path)
+    
+    def register_model(self, model_name: str, run_id: Optional[str] = None):
+        """Register model in MLflow Model Registry."""
+        if run_id is None:
+            run_id = self.run.info.run_id
+        
+        model_uri = f"runs:/{run_id}/model"
+        mlflow.register_model(model_uri, model_name)
+    
+    def end_run(self):
+        """End MLflow run."""
+        mlflow.end_run()
+
+class MLPipelineOrchestrator:
+    """ML pipeline orchestrator with experiment tracking."""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.experiment_tracker = MLflowExperimentTracker(
+            config['experiment']['name'],
+            config.get('mlflow_uri')
+        )
+        self.models = {}
+        self.results = {}
+    
+    def run_experiment(self, X_train, X_test, y_train, y_test):
+        """Run complete ML experiment."""
+        run_name = f"experiment_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        with self.experiment_tracker.start_run(run_name=run_name):
+            # Log configuration
+            self.experiment_tracker.log_hyperparameters(self.config)
+            
+            # Train models
+            pipeline = AdvancedMLPipeline(problem_type=self.config['problem_type'])
+            results = pipeline.train_and_select_model(
+                pd.concat([X_train, X_test]),
+                np.concatenate([y_train, y_test]),
+                cv_folds=self.config['cv_folds'],
+                scoring=self.config['scoring']
+            )
+            
+            # Evaluate best model
+            best_model = pipeline.best_model
+            evaluator = ModelEvaluator(best_model, X_train, X_test, y_train, y_test)
+            metrics = evaluator.evaluate_model()
+            
+            # Log results
+            self.experiment_tracker.log_metrics(metrics)
+            self.experiment_tracker.log_model(best_model)
+            
+            # Save plots
+            plots_dir = Path("plots")
+            plots_dir.mkdir(exist_ok=True)
+            
+            evaluator.plot_learning_curves()
+            plt.savefig(plots_dir / "learning_curves.png")
+            plt.close()
+            
+            evaluator.plot_feature_importance()
+            plt.savefig(plots_dir / "feature_importance.png")
+            plt.close()
+            
+            # Log artifacts
+            self.experiment_tracker.log_artifacts(str(plots_dir))
+            
+            # Register model if performance is good enough
+            if metrics.get('r2', 0) > self.config.get('min_performance', 0.7):
+                self.experiment_tracker.register_model(
+                    self.config['model_registry_name']
+                )
+            
+            return results, metrics
+
+# Configuration example
+config = {
+    "experiment": {
+        "name": "house_price_prediction"
+    },
+    "problem_type": "regression",
+    "cv_folds": 5,
+    "scoring": "neg_mean_squared_error",
+    "min_performance": 0.8,
+    "model_registry_name": "house_price_model",
+    "mlflow_uri": "sqlite:///mlflow.db"
+}
+```
+
+### Model Serving with FastAPI
+```python
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import pandas as pd
+import numpy as np
+import joblib
+from typing: List, Dict, Any
+import mlflow.sklearn
+import uvicorn
+
+class PredictionRequest(BaseModel):
+    """Request model for predictions."""
+    features: Dict[str, float]
+    
+class PredictionResponse(BaseModel):
+    """Response model for predictions."""
+    prediction: float
+    confidence: Optional[float] = None
+    model_version: str
+
+class MLModelServer:
+    """ML model serving with FastAPI."""
+    
+    def __init__(self, model_uri: str, model_name: str = "ml_model"):
+        self.model_name = model_name
+        self.model = mlflow.sklearn.load_model(model_uri)
+        self.feature_names = getattr(self.model, 'feature_names_in_', None)
+    
+    def predict(self, features: Dict[str, float]) -> Dict[str, Any]:
+        """Make prediction from features."""
+        try:
+            # Convert to DataFrame
+            df = pd.DataFrame([features])
+            
+            # Make prediction
+            prediction = self.model.predict(df)[0]
+            
+            # Get confidence if available
+            confidence = None
+            if hasattr(self.model, 'predict_proba'):
+                proba = self.model.predict_proba(df)[0]
+                confidence = float(np.max(proba))
+            
+            return {
+                "prediction": float(prediction),
+                "confidence": confidence,
+                "model_version": "1.0.0"
+            }
+            
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Prediction error: {str(e)}")
+
+# FastAPI app
+app = FastAPI(title="ML Model API", version="1.0.0")
+
+# Initialize model server
+model_server = MLModelServer("models:/house_price_model/Production")
+
+@app.post("/predict", response_model=PredictionResponse)
+async def predict(request: PredictionRequest):
+    """Make prediction endpoint."""
+    result = model_server.predict(request.features)
+    return PredictionResponse(**result)
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy", "model": model_server.model_name}
+
+@app.get("/model/info")
+async def model_info():
+    """Get model information."""
+    return {
+        "model_name": model_server.model_name,
+        "feature_names": model_server.feature_names,
+        "model_type": type(model_server.model).__name__
+    }
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+### Model Monitoring and Drift Detection
+```python
+from evidently import ColumnMapping
+from evidently.report import Report
+from evidently.metric_suite import MetricSuite
+from evidently.metrics import DataDriftMetric, DataQualityMetric, TargetDriftMetric
+import pandas as pd
+import numpy as np
+from typing: Optional, Dict, Any
+import json
+from datetime import datetime
+
+class ModelMonitor:
+    """Model monitoring and drift detection."""
+    
+    def __init__(self, reference_data: pd.DataFrame, target_column: Optional[str] = None):
+        self.reference_data = reference_data
+        self.target_column = target_column
+        self.column_mapping = ColumnMapping(
+            target=target_column,
+            prediction='prediction' if 'prediction' in reference_data.columns else None,
+            numerical_features=reference_data.select_dtypes(include=[np.number]).columns.tolist(),
+            categorical_features=reference_data.select_dtypes(include=['object', 'category']).columns.tolist()
+        )
+    
+    def detect_data_drift(self, current_data: pd.DataFrame) -> Dict[str, Any]:
+        """Detect data drift between reference and current data."""
+        
+        # Create drift report
+        data_drift_report = Report(metrics=[
+            DataDriftMetric(),
+            DataQualityMetric()
+        ])
+        
+        data_drift_report.run(
+            reference_data=self.reference_data,
+            current_data=current_data,
+            column_mapping=self.column_mapping
+        )
+        
+        # Extract results
+        report_dict = data_drift_report.as_dict()
+        
+        drift_results = {
+            'timestamp': datetime.now().isoformat(),
+            'data_drift_detected': report_dict['metrics'][0]['result']['dataset_drift'],
+            'drift_score': report_dict['metrics'][0]['result']['drift_score'],
+            'drifted_features': report_dict['metrics'][0]['result']['drifted_features'],
+            'data_quality_score': report_dict['metrics'][1]['result']['quality_score']
+        }
+        
+        return drift_results
+    
+    def detect_target_drift(self, current_data: pd.DataFrame) -> Dict[str, Any]:
+        """Detect target drift."""
+        if self.target_column is None:
+            raise ValueError("Target column not specified")
+        
+        target_drift_report = Report(metrics=[
+            TargetDriftMetric()
+        ])
+        
+        target_drift_report.run(
+            reference_data=self.reference_data,
+            current_data=current_data,
+            column_mapping=self.column_mapping
+        )
+        
+        report_dict = target_drift_report.as_dict()
+        
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'target_drift_detected': report_dict['metrics'][0]['result']['drift_detected'],
+            'drift_score': report_dict['metrics'][0]['result']['drift_score']
+        }
+    
+    def generate_monitoring_report(self, current_data: pd.DataFrame) -> str:
+        """Generate comprehensive monitoring report."""
+        data_drift = self.detect_data_drift(current_data)
+        
+        report = {
+            'monitoring_timestamp': datetime.now().isoformat(),
+            'data_drift': data_drift,
+            'recommendations': []
+        }
+        
+        if data_drift['data_drift_detected']:
+            report['recommendations'].append("Data drift detected. Consider retraining the model.")
+        
+        if self.target_column:
+            target_drift = self.detect_target_drift(current_data)
+            report['target_drift'] = target_drift
+            
+            if target_drift['target_drift_detected']:
+                report['recommendations'].append("Target drift detected. Review target distribution.")
+        
+        return json.dumps(report, indent=2)
+
+class AutoRetrainer:
+    """Automatic model retraining based on performance degradation."""
+    
+    def __init__(self, performance_threshold: float = 0.05):
+        self.performance_threshold = performance_threshold
+        self.baseline_performance = None
+    
+    def should_retrain(self, current_performance: float) -> bool:
+        """Determine if model should be retrained based on performance degradation."""
+        if self.baseline_performance is None:
+            self.baseline_performance = current_performance
+            return False
+        
+        performance_drop = self.baseline_performance - current_performance
+        return performance_drop > self.performance_threshold
+    
+    def retrain_pipeline(self, X_new: pd.DataFrame, y_new: np.ndarray, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute retraining pipeline."""
+        print("Starting automatic retraining...")
+        
+        # Split data
+        from sklearn.model_selection import train_test_split
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_new, y_new, test_size=0.2, random_state=42
+        )
+        
+        # Run experiment
+        orchestrator = MLPipelineOrchestrator(config)
+        results, metrics = orchestrator.run_experiment(X_train, X_test, y_train, y_test)
+        
+        print(f"Retraining completed. New performance: {metrics.get('r2', 'N/A')}")
+        
+        return {
+            'retraining_timestamp': datetime.now().isoformat(),
+            'new_performance': metrics,
+            'retrain_triggered': True
+        }
+```
+
+## Dependencies
+```python
+# Core ML libraries
+scikit-learn>=1.3.0
+xgboost>=1.7.0
+lightgbm>=3.3.0
+catboost>=1.2.0
+optuna>=3.2.0
+
+# Feature engineering
+feature-engine>=1.6.0
+category-encoders>=2.6.0
+imbalanced-learn>=0.10.0
+
+# Experiment tracking and MLOps
+mlflow>=2.5.0
+wandb>=0.15.0
+dvc>=3.0.0
+great-expectations>=0.17.0
+
+# Model serving
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+bentoml>=1.1.0
+seldon-core>=1.17.0
+
+# Monitoring and drift detection
+evidently>=0.4.0
+whylogs>=1.3.0
+scipy>=1.10.0
+
+# AutoML
+autogluon>=0.8.0
+h2o>=3.42.0
+flaml>=2.1.0
+
+# Deployment and orchestration
+docker>=6.1.0
+kubernetes>=27.0.0
+apache-airflow>=2.6.0
+prefect>=2.10.0
+```
+
+## Best Practices
+
+### Model Development
+- Start with simple baselines and gradually increase complexity
+- Use proper cross-validation strategies (stratified, time series, group)
+- Implement comprehensive feature engineering pipelines
+- Focus on data quality and feature selection over complex algorithms
+- Use ensemble methods for improved robustness and performance
+
+### Production Deployment
+- Implement comprehensive logging and monitoring
+- Use A/B testing for model rollouts
+- Maintain model versioning and rollback capabilities
+- Monitor for data drift and concept drift
+- Implement automated retraining pipelines
+
+### Code Quality
+- Write unit tests for data processing and model components
+- Use configuration files for hyperparameters and settings
+- Implement proper error handling and validation
+- Document model assumptions and limitations
+- Follow software engineering best practices (SOLID principles)
+
+### Scalability
+- Design for horizontal scaling from the beginning
+- Use distributed computing frameworks for large datasets
+- Implement caching strategies for frequently accessed models
+- Optimize inference latency for real-time applications
+- Consider edge deployment for low-latency requirements
+
+Remember: Focus on solving the business problem first, then optimize for performance. Maintain clear documentation of modeling decisions and ensure reproducibility throughout the ML lifecycle.
