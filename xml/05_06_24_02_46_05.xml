@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<icr:RoiCollection ID="RoiCollection_hktsttK_517VADJ4sj1" project="stroke2019_upload_test1" label="SEG_20240506_140514" xmlns:arc="http://nrg.wustl.edu/arc" xmlns:val="http://nrg.wustl.edu/val" xmlns:pipe="http://nrg.wustl.edu/pipe" xmlns:icr="http://icr.ac.uk/icr" xmlns:wrk="http://nrg.wustl.edu/workflow" xmlns:scr="http://nrg.wustl.edu/scr" xmlns:xdat="http://nrg.wustl.edu/security" xmlns:cat="http://nrg.wustl.edu/catalog" xmlns:prov="http://www.nbirn.net/prov" xmlns:xnat="http://nrg.wustl.edu/xnat" xmlns:xnat_a="http://nrg.wustl.edu/xnat_assessments" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://nrg.wustl.edu/workflow http://127.0.0.1/schemas/workflow.xsd http://nrg.wustl.edu/catalog http://127.0.0.1/schemas/catalog.xsd http://nrg.wustl.edu/pipe http://127.0.0.1/schemas/repository.xsd http://nrg.wustl.edu/scr http://127.0.0.1/schemas/screeningAssessment.xsd http://nrg.wustl.edu/arc http://127.0.0.1/schemas/project.xsd http://icr.ac.uk/icr http://127.0.0.1/schemas/roi.xsd http://nrg.wustl.edu/val http://127.0.0.1/schemas/protocolValidation.xsd http://nrg.wustl.edu/xnat http://127.0.0.1/schemas/xnat.xsd http://nrg.wustl.edu/xnat_assessments http://127.0.0.1/schemas/assessments.xsd http://www.nbirn.net/prov http://127.0.0.1/schemas/birnprov.xsd http://nrg.wustl.edu/security http://127.0.0.1/schemas/security.xsd">
+<xnat:date>2024-05-06</xnat:date>
+<xnat:time>14:05:14</xnat:time>
+<xnat:out>
+<xnat:file label="SEG" file_count="1" file_size="203530" URI="/data/xnat/archive/stroke2019_upload_test1/arc001/20803250042/ASSESSORS/SEG_20240506_140514/SEG/SEG_catalog.xml" format="DICOM" description="DICOM Segmentation" content="EXTERNAL" xsi:type="xnat:resourceCatalog"/>
+</xnat:out>
+<xnat:imageSession_ID>XNAT_E01466</xnat:imageSession_ID>
+<icr:UID>1.2.826.0.1.3680043.8.498.55954105293191845392917196090721659005</icr:UID>
+<icr:collectionType>SEG</icr:collectionType>
+<icr:subjectID>XNAT_S01333</icr:subjectID>
+<icr:references>
+<icr:seriesUID>1.2.840.113619.2.353.6945.3202356.19843.15535553551000</icr:seriesUID>
+</icr:references>
+<icr:name>Infarct AI</icr:name>
+</icr:RoiCollection>
