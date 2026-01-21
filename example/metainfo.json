@@ -1,0 +1,36 @@
+{
+  "ContentCreatorName": "infarct_model",
+  "ClinicalTrialTimePointID": "1",
+  "SeriesDescription": "AI Inference",
+  "SeriesNumber": "99",
+  "InstanceNumber": "1",
+  "segmentAttributes": [
+    [
+      {
+        "labelID": 1,
+        "SegmentLabel": "infarct",
+        "SegmentAlgorithmType": "AUTOMATIC",
+        "SegmentAlgorithmName": "ai inference",
+        "SegmentedPropertyCategoryCodeSequence": {
+          "CodeValue": "85756007",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Tissue"
+        },
+        "SegmentedPropertyTypeCodeSequence": {
+          "CodeValue": "85756007",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Tissue"
+        },
+        "recommendedDisplayRGBValue": [
+          255,
+          0,
+          0
+        ]
+      }
+    ]
+  ],
+  "ContentLabel": "SEGMENTATION",
+  "ContentDescription": "Image segmentation",
+  "ClinicalTrialCoordinatingCenterName": "dcmqi",
+  "BodyPartExamined": ""
+}
