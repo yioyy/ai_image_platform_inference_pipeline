@@ -1,0 +1,17 @@
+https://ithelp.ithome.com.tw/questions/10191771
+
+目前使用:
+如果sh檔沒有要帶變數給python，可以:
+source /home/chuan/anaconda3/bin/activate
+conda activate keras-SegUnet
+python /home/chuan/orthanc_test/orthanc_code_want_test/main.py
+conda deactivate
+
+如果sh檔要帶各種變數給python時，寫法改變為:
+直接去指定使用虛擬環境中的python3去啟動
+/home/chuan/anaconda3/envs/orthanc-stroke/bin/python3.7 /home/chuan/orthanc_test/orthanc_code_want_test/model_predict_stroke.py --case_name $1 --path_dcm $2 --path_test_img $3 --path_predict $4 --cuatom_model $5 --gpu_n $6
+
+另外tensorflow中的terminal要完全資訊關閉，需要設定
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+在最上面，另外模型要設定no compile成功或是把模型所有自定義參數都帶入，不然就會出現報錯的那些字串
