@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import sys
 import time
@@ -213,6 +214,14 @@ def _copy_file(src: Path, dst: Path) -> None:
     if not src.exists():
         raise FileNotFoundError(f"找不到檔案：{src}")
     dst.parent.mkdir(parents=True, exist_ok=True)
+    # 避免 src/dst 相同時 shutil.copy2 噴 SameFileError
+    try:
+        if os.path.samefile(src, dst):
+            return
+    except Exception:
+        # Windows/部分環境 samefile 可能不可用；退化用絕對路徑比對
+        if src.resolve().as_posix() == dst.resolve().as_posix():
+            return
     shutil.copy2(src, dst)
 
 

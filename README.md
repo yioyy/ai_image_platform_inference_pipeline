@@ -249,74 +249,35 @@ conda deactivate
 
 ---
 
-### 模組 4: Follow-up 前後比較（檔案導向）
+### 模組 4: Follow-up 前後比較（platform_json）
 
-此模組用於比較 **baseline** 與 **followup** 兩次檢查（檔案導向），流程重點如下：
-- 複製 baseline/followup 的 `Pred_<model>.nii.gz`、`SynthSEG_<model>.nii.gz` 與平台 JSON 到處理目錄
-- **配準前會以 SynthSEG 的幾何資訊（affine/sform/qform）覆蓋 Pred**（shape 必須一致，避免 voxel grid 不一致導致 overlap=0）
-- 使用 FSL `flirt` 將 followup 對位到 baseline，輸出 `<baseline_id>_<model>.mat` 與 `Pred_<model>_registration.nii.gz`
-- 產出：
-  - `Pred_<model>_followup.nii.gz`：合併標註（1=new、2=stable、3=disappeared）
-  - `Followup_<model>_platform_json.json`：平台格式 JSON（在 baseline JSON 上新增 followup 欄位與病灶配對狀態）
-- `--baseline_DicomDir` 可留空；baseline/followup 的 dicom-seg 會被複製到輸出資料夾
+此模組以 **新日期（current）為主體**，將舊日期（prior）對位到新日期並輸出平台 JSON。流程重點如下：
+- 讀取 `--input_json`（檔案路徑或直接 JSON 內容），解析 `needFollowup[]` 與 `ids`
+- 依 `--case_id` 決定 current study，prior 依 `needFollowup` 日期排序
+- 使用 FSL `flirt` 將 **prior 對位到 current**，產出對位矩陣與註記結果
+- 回寫 `Followup_<model>_platform_json_new.json`，新增 `followup[]` 與 `sorted_slice`
 
 #### 直接執行 Python（建議在 Linux / 已安裝 FSL 的環境）
 
 ```bash
-python pipeline_followup.py \
-  --baseline_ID "<Baseline_ID>" \
-  --baseline_Inputs "<Baseline_Pred.nii.gz>" "<Baseline_SynthSEG.nii.gz>" \
-  --baseline_DicomDir "<Baseline_DICOM_Dir_or_empty>" \
-  --baseline_DicomSegDir "<Baseline_DicomSegDir>" \
-  --baseline_json "<Baseline_platform_json.json>" \
-  --followup_ID "<Followup_ID>" \
-  --followup_Inputs "<Followup_Pred.nii.gz>" "<Followup_SynthSEG.nii.gz>" \
-  --followup_DicomSegDir "<Followup_DicomSegDir>" \
-  --followup_json "<Pred_<model>_platform_json.json>" \
-  --path_output "<Output_Folder>" \
+python pipeline_followup_v3_platform.py \
+  --input_json "<followup_input.json>" \
+  --path_process "/data/4TB1/pipeline/sean/rename_nifti/" \
+  --path_followup_root "/data/4TB1/pipeline/chuan/process" \
+  --case_id "<patientid_studydate_MR_accessnumber>" \
   --model "CMB" \
-  --path_process "./process/Deep_FollowUp/" \
-  --path_log "./log/" \
+  --model_type 2 \
+  --platform_json_name "Pred_CMB_platform_json.json" \
   --fsl_flirt_path "/usr/local/fsl/bin/flirt" \
-  --upload_json
-```
-
-#### （新入口）不提供任何 NIfTI：用 Pred/SynthSEG 的 DICOM-SEG + headers 反推 NIfTI
-
-> 只需要 **per-instance headers json（無 PixelData）** + **Pred/SynthSEG 的 DICOM-SEG（含 PixelData）**，腳本會在暫存目錄生成 `Pred_<model>.nii.gz` 與 `SynthSEG_<model>.nii.gz`，再呼叫既有 `pipeline_followup.py` 流程。\n
-
-```bash
-python pipeline_followup_from_dicomseg.py \
-  --baseline_ID "<Baseline_ID>" \
-  --baseline_pred_dicomseg "<Baseline_Pred_<model>.dcm>" \
-  --baseline_synthseg_dicomseg "<Baseline_SynthSEG_<model>.dcm>" \
-  --baseline_series_headers "<Baseline_series_headers.json>" \
-  --baseline_DicomDir "<Baseline_DICOM_Dir_or_empty>" \
-  --baseline_DicomSegDir "<Baseline_DicomSegDir>" \
-  --baseline_json "<Baseline_platform_json.json>" \
-  --followup_ID "<Followup_ID>" \
-  --followup_pred_dicomseg "<Followup_Pred_<model>.dcm>" \
-  --followup_synthseg_dicomseg "<Followup_SynthSEG_<model>.dcm>" \
-  --followup_series_headers "<Followup_series_headers.json>" \
-  --followup_DicomSegDir "<Followup_DicomSegDir>" \
-  --followup_json "<Followup_platform_json.json>" \
-  --path_output "<Output_Folder>" \
-  --model "CMB" \
-  --path_process "./process/Deep_FollowUp/" \
-  --path_log "./log/" \
-  --fsl_flirt_path "/usr/local/fsl/bin/flirt" \
-  --upload_json
+  --path_log "/data/4TB1/pipeline/chuan/log"
 ```
 
 #### 輸出（Follow-up）
 
 ```
-<Output_Folder>/<Baseline_ID>/
-├── Followup_<model>_platform_json.json
-├── Pred_<model>_followup.nii.gz
-└── dicom-seg/
-    ├── baseline/     # baseline dicom-seg 複製
-    └── followup/     # followup dicom-seg 複製
+<path_followup_root>/Deep_FollowUp/<case_id>/
+└── result/
+    └── Followup_<model>_platform_json_new.json
 ```
 
 ---

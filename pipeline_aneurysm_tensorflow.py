@@ -42,6 +42,7 @@ from util_aneurysm import reslice_nifti_pred_nobrain, create_MIP_pred, AneurysmP
     create_dicomseg_multi_file, compress_dicom_into_jpeglossless, orthanc_zip_upload, upload_json_aiteam, \
     decompress_dicom_with_gdcm, resampleSynthSEG2original
 import subprocess
+import tempfile
 
 from code_ai.pipeline.dicomseg.aneurysm import main as make_pred_json
 
@@ -92,6 +93,7 @@ def pipeline_aneurysm(ID,
                       path_aneurysm_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres',
                       path_processModel = '/mnt/e/pipeline/chuan/process/Deep_Aneurysm/', 
                       path_outdcm = '',
+                      input_json = '',
                       path_json = '/mnt/e/pipeline/chuan/json/',
                       path_log = '/mnt/e/pipeline/chuan/log/', 
                       gpu_n = 0
@@ -110,6 +112,7 @@ def pipeline_aneurysm(ID,
     path_aneurysm_model = _clean_path(path_aneurysm_model)
     path_processModel = _clean_path(path_processModel)
     path_outdcm = _clean_path(path_outdcm)
+    input_json = str(input_json).strip().replace("\r", "").replace("\n", "")
     path_json = _clean_path(path_json)
     path_log = _clean_path(path_log)
 
@@ -262,7 +265,6 @@ def pipeline_aneurysm(ID,
             print(f"[Done decompress_JEPG... ] spend {time.time() - start_decompress_JEPG:.0f} sec")
             logging.info(f"[Done decompress_JEPG... ] spend {time.time() - start_decompress_JEPG:.0f} sec")
 
-
             path_png = os.path.join(path_code, 'png')
             start_mip = time.time()
             create_MIP_pred(path_dcm_n, path_reslice_n, path_png, gpu_n)
@@ -303,6 +305,7 @@ def pipeline_aneurysm(ID,
             Series = ['MRA_BRAIN', 'MIP_Pitch', 'MIP_Yaw']
             #group_id1 = 53 # 君彥的模型
             group_id2 = 56 # nnU-Net的模型
+            #group_id2 = 57 # nnU-Net 低threshold的模型
             # model_id = '924d1538-597c-41d6-bc27-4b0b359111cf'
             start_json = time.time()
             #make_aneurysm_pred_json(ID, pathlib.Path(path_nnunet), model_id)  #(_id, path_root, group_id)
@@ -422,6 +425,50 @@ def pipeline_aneurysm(ID,
             print(f"[Done All Pipeline!!! ] spend {time.time() - start:.0f} sec")
             logging.info(f"[Done All Pipeline!!! ] spend {time.time() - start:.0f} sec")
             logging.info('!!! ' + ID +  ' post_aneurysm finish.')
+
+            followup_script = os.path.join(path_code, "pipeline_followup_v3_platform.py")
+            cmd = [
+                "python",
+                followup_script,
+                "--case_id",
+                ID,
+                "--model",
+                "Aneurysm",
+                "--model_type",
+                "1",
+                "--path_process",
+                "/data/4TB1/pipeline/chuan/process/",
+                "--platform_json_name",
+                "Pred_Aneurysm_platform_json.json",
+            ]
+            if input_json:
+                input_json_path = ""
+                if os.path.isfile(input_json):
+                    input_json_path = input_json
+                else:
+                    os.makedirs(path_processModel, exist_ok=True)
+                    try:
+                        json.loads(input_json)
+                        payload = input_json
+                    except json.JSONDecodeError:
+                        payload = input_json
+                        logging.warning("input_json is not valid JSON; write raw content to temp file.")
+                    with tempfile.NamedTemporaryFile(
+                        mode="w",
+                        suffix=".json",
+                        delete=False,
+                        dir=path_processModel,
+                        encoding="utf-8",
+                    ) as temp_fp:
+                        temp_fp.write(payload)
+                        input_json_path = temp_fp.name
+                cmd.extend(["--input_json", input_json_path])
+            start_followup = time.time()
+            subprocess.run(cmd)
+            print(f"[Done followup-v3 platform!!! ] spend {time.time() - start_followup:.0f} sec")
+            logging.info(f"[Done followup-v3 platform!!! ] spend {time.time() - start_followup:.0f} sec")
+
+            
         
         else:
             logging.error('!!! ' + str(ID) + ' Insufficient GPU Memory.')
@@ -450,15 +497,18 @@ if __name__ == '__main__':
     parser.add_argument('--Inputs', type=str, nargs='+', default = ['/data/4TB1/pipeline/chuan/example_input/17390820_20250604_MR_21406040004/MRA_BRAIN.nii.gz'], help='用於輸入的檔案')
     parser.add_argument('--DicomDir', type=str, nargs='+', default = ['/data/4TB1/pipeline/chuan/example_inputDicom/17390820_20250604_MR_21406040004/MRA_BRAIN/'], help='用於輸入的檔案')
     parser.add_argument('--Output_folder', type=str, default = '/data/4TB1/pipeline/chuan/example_output/',help='用於輸出結果的資料夾')    
+    parser.add_argument('--input_json', type=str, default = '', help='followup-v3 平台輸入 json 內容或檔案路徑')
     args = parser.parse_args()
 
     ID = str(args.ID)
     Inputs = args.Inputs  # 將列表合併為字符串，保留順序
     DicomDirs = args.DicomDir #對應的dicom資料夾，用來做dicom-seg
     path_output = str(args.Output_folder)
+    input_json = str(args.input_json)
     #path_output = args.Output_folder
     # 避免命令列/文字檔帶入 \r\n 造成路徑錯誤
     path_output = os.path.normpath(path_output.strip().replace("\r", "").replace("\n", ""))
+    input_json = os.path.normpath(input_json.strip().replace("\r", "").replace("\n", ""))
 
     #讀出DWI, DWI0, ADC, SynthSEG的檔案
     MRA_BRAIN_file = Inputs[0]
@@ -490,7 +540,21 @@ if __name__ == '__main__':
     #os.makedirs(path_output,exist_ok=True)
 
     #直接當作function的輸入，因為可能會切換成nnUNet的版本，所以自訂化模型移到跟model一起，synthseg自己做，不用統一
-    pipeline_aneurysm(ID, MRA_BRAIN_file, path_output, path_code, path_brain_model, path_vessel_model, path_aneurysm_model, path_processModel, path_DcmDir, path_json, path_log, gpu_n)
+    pipeline_aneurysm(
+        ID,
+        MRA_BRAIN_file,
+        path_output,
+        path_code,
+        path_brain_model,
+        path_vessel_model,
+        path_aneurysm_model,
+        path_processModel,
+        path_DcmDir,
+        input_json,
+        path_json,
+        path_log,
+        gpu_n,
+    )
     
 
     # #最後再讀取json檔結果

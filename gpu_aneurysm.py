@@ -413,12 +413,13 @@ def save_nii_vessel(path_process, image_arr, pred_vessel, vessel_16labels, out_d
         os.mkdir(os.path.join(out_dir, 'Vessel'))
 
     img = nib.load(os.path.join(path_process, 'MRA_BRAIN.nii.gz'))
-    img = nib.as_closest_canonical(img)  # to RAS space
     aff = img.affine
     hdr = img.header
     spacing = tuple(img.header.get_zooms())
     shape = tuple(img.header.get_data_shape())
     original_size = tuple(img.header.get_data_shape())
+
+    img = nib.as_closest_canonical(img)  # to RAS space
     #nib.save(img, f"{out_dir}/image.nii.gz")
     #print("[save] --->", f"{out_dir}/image.nii.gz")
 
@@ -749,7 +750,9 @@ def model_predict_aneurysm(path_code, path_process, path_brain_model, path_vesse
         
             spacing_nn = [pixdim[1], pixdim[2]]
         
-            pred_prob_map, df_pred, new_pred_label = filter_aneurysm(prob, spacing_nn, conf_th=0.1, min_diameter=2, top_k=4, obj_th=0.73)
+            pred_prob_map, df_pred, new_pred_label = filter_aneurysm(prob, spacing_nn, conf_th=0.1, min_diameter=2, top_k=4, obj_th=0.73) #0.73是高threshold的模型
+            #pred_prob_map, df_pred, new_pred_label = filter_aneurysm(prob, spacing_nn, conf_th=0.1, min_diameter=2, top_k=4, obj_th=0.46) #0.40是低threshold的模型
+
         
             #最後存出新mask，存出nifti
             new_pred_label = data_translate_back(new_pred_label, prob_nii).astype(int)

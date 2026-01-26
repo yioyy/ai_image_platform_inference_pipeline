@@ -12,6 +12,7 @@ Follow-up pipeline (DICOM-SEG entry, zero-invasive).
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -30,32 +31,45 @@ def _require_file(path: str, name: str) -> Path:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Follow-up comparison pipeline (from DICOM-SEG + headers)")
-    p.add_argument("--baseline_ID", required=True)
-    p.add_argument("--baseline_pred_dicomseg", required=True, help="baseline Pred 的 DICOM-SEG (.dcm)")
-    p.add_argument("--baseline_synthseg_dicomseg", required=True, help="baseline SynthSEG DICOM-SEG (.dcm)")
-    p.add_argument("--baseline_series_headers", required=True, help="baseline series per-instance headers json（無 PixelData）")
-    p.add_argument("--baseline_DicomDir", default="", help="可留空")
-    p.add_argument("--baseline_DicomSegDir", required=True)
-    p.add_argument("--baseline_json", required=True)
+    p.add_argument("--baseline_ID", default = '00130846_20220105_MR_E211126000320', help='目前執行的case的baseline ID')
+    p.add_argument("--baseline_pred_dicomseg", default="/data/4TB1/pipeline/chuan/process/Deep_FollowUp/00130846_20220105_MR_E211126000320/baseline/Pred_CMB.dcm", help="baseline Pred 的 DICOM-SEG (.dcm)")
+    p.add_argument("--baseline_synthseg_dicomseg", default="/data/4TB1/pipeline/chuan/process/Deep_FollowUp/00130846_20220105_MR_E211126000320/baseline/SynthSEG_CMB.dcm", help="baseline SynthSEG DICOM-SEG (.dcm)")
+    p.add_argument("--baseline_series_headers", default="/data/4TB1/pipeline/chuan/process/Deep_FollowUp/00130846_20220105_MR_E211126000320/baseline/dicom_headers.json", help="baseline series per-instance headers json（無 PixelData）")
+    p.add_argument("--baseline_json", default="/data/4TB1/pipeline/chuan/process/Deep_FollowUp/00130846_20220105_MR_E211126000320/baseline/Pred_CMB_platform_json.json")
 
-    p.add_argument("--followup_ID", required=True)
-    p.add_argument("--followup_pred_dicomseg", required=True, help="followup Pred 的 DICOM-SEG (.dcm)")
-    p.add_argument("--followup_synthseg_dicomseg", required=True, help="followup SynthSEG DICOM-SEG (.dcm)")
-    p.add_argument("--followup_series_headers", required=True, help="followup series per-instance headers json（無 PixelData）")
-    p.add_argument("--followup_DicomSegDir", required=True)
-    p.add_argument("--followup_json", required=True)
+    p.add_argument("--followup_ID", default="00130846_20210409_MR_21003160054")
+    p.add_argument("--followup_pred_dicomseg", default="/data/4TB1/pipeline/chuan/process/Deep_FollowUp/00130846_20220105_MR_E211126000320/followup/Pred_CMB.dcm", help="followup Pred 的 DICOM-SEG (.dcm)")
+    p.add_argument("--followup_synthseg_dicomseg", default="/data/4TB1/pipeline/chuan/process/Deep_FollowUp/00130846_20220105_MR_E211126000320/followup/SynthSEG_CMB.dcm", help="followup SynthSEG DICOM-SEG (.dcm)")
+    p.add_argument("--followup_series_headers", default="/data/4TB1/pipeline/chuan/process/Deep_FollowUp/00130846_20220105_MR_E211126000320/followup/dicom_headers.json", help="followup series per-instance headers json（無 PixelData）")
+    p.add_argument("--followup_json", default="/data/4TB1/pipeline/chuan/process/Deep_FollowUp/00130846_20220105_MR_E211126000320/followup/Pred_CMB_platform_json.json")
 
-    p.add_argument("--path_output", required=True)
+    p.add_argument("--path_output", default="/data/4TB1/pipeline/chuan/example_output/00130846_20220105_MR_E211126000320/")
     p.add_argument("--model", default="CMB")
-    p.add_argument("--path_code", default="")
-    p.add_argument("--path_process", default="")
-    p.add_argument("--path_json", default="")
-    p.add_argument("--path_log", default="")
+    p.add_argument("--path_code", default="/data/4TB1/pipeline/chuan/code/")
+    p.add_argument("--path_process", default="/data/4TB1/pipeline/chuan/process/Deep_FollowUp/")
+    p.add_argument("--path_json", default="/data/4TB1/pipeline/chuan/json/")
+    p.add_argument("--path_log", default="/data/4TB1/pipeline/chuan/log/")
     p.add_argument("--gpu_n", default=0, type=int)
     p.add_argument("--fsl_flirt_path", default="/usr/local/fsl/bin/flirt")
     p.add_argument("--upload_json", action="store_true")
     p.add_argument("--overlap_mode", default="max", choices=["max", "overwrite"], help="SEG 重疊時的 label 合成規則")
     return p
+
+
+def _materialize_dicomseg_dir(*, out_dir: Path, dicomseg_files: List[Path]) -> Path:
+    """
+    舊的 `pipeline_followup.pipeline_followup()` 會要求傳入 baseline/followup 的 DicomSegDir，
+    但在這個「新入口」我們已經用 --*_pred_dicomseg/--*_synthseg_dicomseg 精確指定 SEG 檔案路徑。
+
+    為了不修改舊 pipeline，又能移除不必要的 CLI 參數（baseline_DicomSegDir/followup_DicomSegDir），
+    這裡在暫存資料夾內建立一個 dicomseg dir，將指定的 SEG 檔複製進去，再把該 dir 傳給舊 pipeline。
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for f in dicomseg_files:
+        if not f.exists():
+            raise FileNotFoundError(f"找不到 DICOM-SEG 檔案：{f}")
+        shutil.copy2(f, out_dir / f.name)
+    return out_dir
 
 
 def main(argv: List[str]) -> int:
@@ -73,6 +87,14 @@ def main(argv: List[str]) -> int:
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
+        baseline_dicomseg_dir = _materialize_dicomseg_dir(
+            out_dir=td / "baseline_dicomseg",
+            dicomseg_files=[baseline_pred_seg, baseline_seg],
+        )
+        followup_dicomseg_dir = _materialize_dicomseg_dir(
+            out_dir=td / "followup_dicomseg",
+            dicomseg_files=[followup_pred_seg, followup_seg],
+        )
         baseline_pred = td / f"Pred_{args.model}_baseline.nii.gz"
         followup_pred = td / f"Pred_{args.model}_followup.nii.gz"
         baseline_syn = td / f"SynthSEG_{args.model}_baseline.nii.gz"
@@ -106,12 +128,12 @@ def main(argv: List[str]) -> int:
         pipeline_followup.pipeline_followup(
             baseline_ID=args.baseline_ID,
             baseline_Inputs=[str(baseline_pred), str(baseline_syn)],
-            baseline_DicomDir=args.baseline_DicomDir,
-            baseline_DicomSegDir=args.baseline_DicomSegDir,
+            baseline_DicomDir="",
+            baseline_DicomSegDir=str(baseline_dicomseg_dir),
             baseline_json=args.baseline_json,
             followup_ID=args.followup_ID,
             followup_Inputs=[str(followup_pred), str(followup_syn)],
-            followup_DicomSegDir=args.followup_DicomSegDir,
+            followup_DicomSegDir=str(followup_dicomseg_dir),
             followup_json=args.followup_json,
             path_output=args.path_output,
             model=args.model,
