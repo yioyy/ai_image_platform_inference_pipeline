@@ -166,6 +166,7 @@ conda deactivate
 #### Follow-up（可選）
 - 若有提供 `--input_json`（檔案路徑或 JSON 內容），會在動脈瘤推論後執行 followup-v3 平台流程並上傳結果。
 - 未提供 `--input_json` 則跳過 followup，僅上傳原版 JSON。
+- 也就是：動脈瘤模組在**有提供 `--input_json` 時會自動做 followup**。
 
 ---
 
@@ -298,6 +299,7 @@ python pipeline_followup_v3_platform.py \
 | `--Inputs` | str | MRA 影像路徑 | `/data/input/MRA_BRAIN.nii.gz` |
 | `--DicomDir` | str | DICOM 目錄 | `/data/inputDicom/MRA_BRAIN/` |
 | `--Output_folder` | str | 輸出資料夾 | `/data/output/` |
+| `--input_json` | str | Follow-up v3 輸入（檔案路徑或 JSON 內容）；未提供則跳過 followup | `/data/.../followup_input.json` |
 
 ### 模組 2: 梗塞分析參數
 
@@ -331,6 +333,12 @@ python pipeline_followup_v3_platform.py \
 ├── Pred_Aneurysm_Vessel16.nii.gz     # 16 區域血管分割
 ├── Pred_Aneurysm.json                # 預測結果 JSON
 └── Pred_Aneurysm_platform_json.json  # 平台格式 JSON
+```
+
+Follow-up（有提供 `--input_json` 時）：
+```
+/data/4TB1/pipeline/chuan/process/Deep_FollowUp/<case_id>/result/
+└── Followup_Aneurysm_platform_json_new_<YYYYMMDD>.json
 ```
 
 ### 模組 2: 梗塞輸出檔案
@@ -374,7 +382,8 @@ python pipeline_followup_v3_platform.py \
 4. 影像重建 → Reslice + MIP 生成 (Pitch/Yaw)
 5. 數據分析 → 動脈瘤量測 + Excel 報告
 6. 格式轉換 → DICOM-SEG + JSON
-7. 結果上傳 → Orthanc PACS + AI 平台
+7. Follow-up（可選）→ 提供 `--input_json` 時執行 followup-v3 並上傳結果
+8. 結果上傳 → Orthanc PACS + AI 平台
 ```
 
 **預估時間**: 2-4 分鐘
