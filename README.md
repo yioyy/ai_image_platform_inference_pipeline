@@ -255,11 +255,12 @@ conda deactivate
 
 ### 模組 4: Follow-up 前後比較（platform_json）
 
-此模組以 **新日期（current）為主體**，將舊日期（prior）對位到新日期並輸出平台 JSON。流程重點如下：
+此模組以 `--case_id` 作為比較基準（輸入 ID），並依輸入日期與 `needFollowup` 日期的先後關係輸出多筆結果：
 - 讀取 `--input_json`（檔案路徑或直接 JSON 內容），解析 `needFollowup[]` 與 `ids`
-- 依 `--case_id` 決定 current study，prior 依 `needFollowup` 日期排序
+- 比 `case_id` **舊**的日期：合併到「以 `case_id` 為主體」的輸出
+- 比 `case_id` **新**的日期：各自產生「以該日期為主體」的輸出，且只與 `case_id` 比對
 - 使用 FSL `flirt` 將 **prior 對位到 current**，產出對位矩陣與註記結果
-- 回寫 `Followup_<model>_platform_json_new.json`，新增 `followup[]` 與 `sorted_slice`
+- 輸出命名：`Followup_<model>_platform_json_new_<YYYYMMDD>.json`
 
 #### 直接執行 Python（建議在 Linux / 已安裝 FSL 的環境）
 
@@ -281,7 +282,8 @@ python pipeline_followup_v3_platform.py \
 ```
 <path_followup_root>/Deep_FollowUp/<case_id>/
 └── result/
-    └── Followup_<model>_platform_json_new.json
+    ├── Followup_<model>_platform_json_new_<YYYYMMDD>.json
+    └── Followup_<model>_platform_json_new_<YYYYMMDD>.json
 ```
 
 ---
