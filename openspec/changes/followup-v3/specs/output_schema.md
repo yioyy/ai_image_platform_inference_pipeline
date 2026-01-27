@@ -16,7 +16,7 @@
 
 ## 2.1 欄位來源對照（輸入 → 輸出）
 - `study.model[].followup[]`：來自 `needFollowup[].studyInstanceUid` 與 `study_date` 的組合
-- `mask...followup[]`：來自 `needFollowup[].models[].mask[]` 的病灶資訊
+- `mask...followup[]`：來自 current/prior 的 `Pred_*_platform_json.json` 病灶資訊
 - `sorted_slice[]`：由 NIfTI 對位產生的 slice 對應表（參考 followup_manifest 的 sorted）
 
 ## 3. study.model[].followup[]
@@ -49,6 +49,7 @@
   "mask_index": "string",
   "old_diameter": "string",
   "old_volume": "string",
+  "old_prob_max": "string",
   "status": "new | stable | regress",
   "study_date": "YYYY-MM-DD",
   "main_seg_slice": number,
@@ -68,6 +69,7 @@
   - `new`：可為空字串
   - `stable` / `regress`：填入 prior study 的 `mask_index`
 - `old_diameter` / `old_volume`：對應 prior study 的病灶資料（無資料可為空）
+- `old_prob_max`：對應 prior study 的 `prob_max`（無資料可為空）
 - `main_seg_slice`：
   - `stable` / `regress`：直接沿用 followup 端原 `main_seg_slice`
   - `new`：使用矩陣轉換後的 z 值
@@ -169,6 +171,7 @@
                     "mask_index": "",
                     "old_diameter": "",
                     "old_volume": "",
+                    "old_prob_max": "",
                     "status": "new",
                     "study_date": "2021-04-09",
                     "main_seg_slice": 78,
@@ -181,6 +184,7 @@
                     "mask_index": "2",
                     "old_diameter": "2.2460000217",
                     "old_volume": "",
+                    "old_prob_max": "0.831705",
                     "status": "stable",
                     "study_date": "2021-04-09",
                     "main_seg_slice": 66,
@@ -211,6 +215,7 @@
                     "mask_index": "5",
                     "old_diameter": "1.5320000143",
                     "old_volume": "",
+                    "old_prob_max": "0.745000",
                     "status": "regress",
                     "study_date": "2021-04-09",
                     "main_seg_slice": 41,

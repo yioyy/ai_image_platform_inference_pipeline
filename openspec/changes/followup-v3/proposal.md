@@ -16,7 +16,7 @@ v2 導入 DICOM-SEG 還原 NIfTI，流程繁瑣且不穩定，導致追蹤比對
 2. **多模型一致**：同一 study 中有幾個 `model_type` 就執行幾種 follow-up。
 3. **輸出一致性**：`Pred_*_platform_json.json` 的 `study` 與 `mask` 都新增 followup 欄位，並加入 `sorted_slice` 對照。
 4. **主體規則明確**：以日期新者為主體產出結果，必要時多筆結果多次通知。
-5. **欄位完整**：輸出欄位對應 `needFollowup.models[].mask[]` 與 DICOM UID，支援跳轉與 SEG 顯示。
+5. **欄位完整**：輸出欄位對應 `Pred_*_platform_json.json` 與 DICOM UID，支援跳轉與 SEG 顯示。
 
 ## 輸入 JSON 定義（00130846_followup_input.json）
 ### 必要欄位
@@ -29,14 +29,6 @@ v2 導入 DICOM-SEG 還原 NIfTI，流程繁瑣且不穩定，導致追蹤比對
 - `models[]`：多模型輸入
   - `model_type`: int（1=Aneurysm，2=CMB，3=Infarct，4=WMH）
   - `type`: string（與 model_type 對應）
-  - `mask[]`: 本 study 的病灶清單（若無可空陣列）
-
-### mask[] 欄位來源
-`mask[]` 來自既有平台輸出或人工審核結果，至少包含：
-- `mask_index` / `mask_name` / `diameter` / `volume` / `prob_max`
-- `main_seg_slice` / `dicom_series_instance_uid` / `dicom_sop_instance_uid`
-- `seg_series_instance_uid` / `seg_sop_instance_uid`
-- `checked` / `is_ai` 等標記
 
 ## 資料來源與檔案命名
 ### Case 資料夾規則
@@ -59,20 +51,23 @@ Follow-up 結果輸出至：`/data/4TB1/pipeline/chuan/process/Deep_FollowUp/<cu
 > （如需不同 JSON 檔名，可透過參數覆蓋）。
 
 ## 模型判定規則
-- 若有指定 `model`，僅執行該 `model` 的 follow-up。
+- 若有指定 `model` 或 `model_type`，僅執行該模型，且需驗證該模型存在於 `needFollowup[].models[]`。
+- 若驗證失敗，記錄 log 並跳過執行（不拋錯），並回傳 `False` 供外部判斷「模型不存在」情境。
 - 若未指定 `model`，使用 `needFollowup[].models[]` 內的 `model_type` 判定模型。
 - 同一 study 若同時出現 model_type=2 與 4，需分別產生 CMB 與 WMH 的 follow-up output。
-- `mask[]` 為空則仍需輸出 followup 結構（但內容為空陣列）。
 
 ## 時序與比對規則
-1. 解析 `00130846_followup_input.json`：取得 `ids` 與 `needFollowup`。 其實ids沒什麼意義，我會提供比較的ID。
-2. 將 `needFollowup[].study_date` 轉成 `YYYYMMDD` 比對鍵後排序。
-3. 以 **最新日期為 current**，其餘為 prior：
-   - current 與所有 prior 逐一比較（多對一）。
-4. 主體規則：
-   - 若新進資料為最新：主體為新日期，輸出以新日期為主的結果。
-   - 若新進資料較舊：主體為資料庫較新的日期，仍以日期新者為主體。
-5. `ids` 與 `needFollowup` 的對應由後續輸入確定，但排序與主體規則維持一致。
+1. 解析 `00130846_followup_input.json`：取得 `ids` 與 `needFollowup`。`ids` 由外部提供比較的 ID。
+2. 將輸入 ID 的日期與 `needFollowup[].study_date` 轉成 `YYYYMMDD` 比對鍵。
+3. 比較輸入 ID 日期與 `needFollowup` 各日期的先後（不需對 needFollowup 排序）。
+4. 主體規則（以輸入 ID 為比較基準）：
+   - 比輸入 ID **舊**的日期：全部放在「以輸入 ID 為主體」的 JSON 內。
+   - 比輸入 ID **新**的日期：各自生成「以該日期為主體」的 JSON，且內部只與輸入 ID 比對。
+5. 產出數量：
+   - 若輸入 ID 為**最新**，僅產生 1 個 output（包含所有舊日期）。
+   - 若輸入 ID 為**最舊**，需產生 `n` 個 output，`n = needFollowup` 長度。
+   - 若輸入 ID 居中，產生「以輸入 ID 為主體」的 1 個 output，外加每個新日期各 1 個 output。
+6. 輸出檔名以日期區分：`Followup_<model>_platform_json_new_<YYYYMMDD>.json`。
 
 ## 對位方式
 沿用 v1 NIfTI 對位流程（FSL flirt）：
@@ -116,7 +111,7 @@ Follow-up 結果輸出至：`/data/4TB1/pipeline/chuan/process/Deep_FollowUp/<cu
 - `needFollowup` 為空：不執行 follow-up，回傳空結果或提示。
 - 同一 patient 同日多筆資料：視為輸入錯誤並中止。
 - 檔案缺失（Pred/SynthSEG/平台 JSON）：中止並回報缺失清單。
-- `mask[]` 無資料：允許輸出 followup 結構但內容為空。
+- `needFollowup` 為空：不執行 follow-up，回傳空結果或提示。
 
 ## 驗收標準
 - 需要 case 資料夾內 NIfTI / platform_json 可完成比對

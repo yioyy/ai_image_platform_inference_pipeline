@@ -45,6 +45,7 @@ import subprocess
 import tempfile
 
 from code_ai.pipeline.dicomseg.aneurysm import main as make_pred_json
+from pipeline_followup_v3_platform import pipeline_followup_v3_platform
 
 # from code_ai.pipeline.dicomseg.build_aneurysm import main as make_aneurysm_pred_json
 # from code_ai.pipeline.dicomseg.build_vessel_dilated import main as make_vessel_pred_json
@@ -328,10 +329,6 @@ def pipeline_aneurysm(ID,
             print(f"[Done start_upload_dicom... ] spend {time.time() - start_upload_dicom:.0f} sec")
             logging.info(f"[Done start_upload_dicom... ] spend {time.time() - start_upload_dicom:.0f} sec")
 
-            #接下來，上傳json
-            json_file_n = os.path.join(path_json_out_n, ID + '_platform_json.json')
-            upload_json_aiteam(json_file_n)
-
             #把json跟nii輸出到out資料夾，這裡只傳nnunet的結果，因為nnU-Net的結果比較好
             shutil.copy(os.path.join(path_nnunet, 'Pred.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm.nii.gz'))
             shutil.copy(os.path.join(path_nnunet, 'Prob.nii.gz'), os.path.join(path_output, 'Prob_Aneurysm.nii.gz'))
@@ -426,33 +423,15 @@ def pipeline_aneurysm(ID,
             logging.info(f"[Done All Pipeline!!! ] spend {time.time() - start:.0f} sec")
             logging.info('!!! ' + ID +  ' post_aneurysm finish.')
 
-            followup_script = os.path.join(path_code, "pipeline_followup_v3_platform.py")
-            cmd = [
-                "python",
-                followup_script,
-                "--case_id",
-                ID,
-                "--model",
-                "Aneurysm",
-                "--model_type",
-                "1",
-                "--path_process",
-                "/data/4TB1/pipeline/chuan/process/",
-                "--platform_json_name",
-                "Pred_Aneurysm_platform_json.json",
-            ]
+            followup_root = pathlib.Path("/data/4TB1/pipeline/chuan/process")
+            # 若有提供 input_json（可能是檔案路徑或 JSON 內容）
             if input_json:
-                input_json_path = ""
+                # 若是檔案路徑，直接使用
                 if os.path.isfile(input_json):
                     input_json_path = input_json
                 else:
+                    # 不是檔案路徑時，直接處理 JSON 內容
                     os.makedirs(path_processModel, exist_ok=True)
-                    try:
-                        json.loads(input_json)
-                        payload = input_json
-                    except json.JSONDecodeError:
-                        payload = input_json
-                        logging.warning("input_json is not valid JSON; write raw content to temp file.")
                     with tempfile.NamedTemporaryFile(
                         mode="w",
                         suffix=".json",
@@ -460,15 +439,76 @@ def pipeline_aneurysm(ID,
                         dir=path_processModel,
                         encoding="utf-8",
                     ) as temp_fp:
-                        temp_fp.write(payload)
+                        temp_fp.write(input_json)
                         input_json_path = temp_fp.name
-                cmd.extend(["--input_json", input_json_path])
-            start_followup = time.time()
-            subprocess.run(cmd)
-            print(f"[Done followup-v3 platform!!! ] spend {time.time() - start_followup:.0f} sec")
-            logging.info(f"[Done followup-v3 platform!!! ] spend {time.time() - start_followup:.0f} sec")
+            else:
+                # 未提供 input_json 時，不執行 followup
+                input_json_path = ""
 
-            
+            if input_json_path:
+                start_followup = time.time()
+                try:
+                    outputs, has_model = pipeline_followup_v3_platform(
+                        input_json=pathlib.Path(input_json_path),
+                        path_process=pathlib.Path("/data/4TB1/pipeline/chuan/process/"),
+                        model="Aneurysm",
+                        model_type=1,
+                        case_id=ID,
+                        platform_json_name="Pred_Aneurysm_platform_json.json",
+                        path_followup_root=followup_root,
+                    )
+                    logging.info(
+                        "Followup-v3 outputs=%d has_model=%s", len(outputs), has_model
+                    )
+                    print(
+                        f"[FollowUp] outputs={len(outputs)} has_model={has_model}"
+                    )
+                except Exception:
+                    has_model = False
+                    logging.error("Followup-v3 platform failed.", exc_info=True)
+                    print("[FollowUp] Error: followup-v3 platform failed.")
+
+                print(f"[Done followup-v3 platform!!! ] spend {time.time() - start_followup:.0f} sec")
+                logging.info(f"[Done followup-v3 platform!!! ] spend {time.time() - start_followup:.0f} sec")
+            else:
+                has_model = False
+                logging.info("Skip followup-v3 platform: input_json is empty.")
+                print("[FollowUp] Skip: input_json is empty.")
+
+            #接下來，上傳json
+            json_file_n = os.path.join(path_json_out_n, ID + '_platform_json.json')
+            # followup 有執行且存在該模型時，改上傳 followup 結果
+            if has_model:
+                result_dir = followup_root / "Deep_FollowUp" / ID / "result"
+                # 若結果資料夾存在，上傳其中所有 JSON
+                if result_dir.is_dir():
+                    for json_path in result_dir.glob("*.json"):
+                        try:
+                            resp = upload_json_aiteam(str(json_path))
+                            logging.info("Upload followup json: %s resp=%s", json_path, resp)
+                            print(f"[Upload] followup json={json_path} resp={resp}")
+                        except Exception as exc:
+                            logging.error("Upload followup json failed: %s", json_path, exc_info=True)
+                            print(f"[Upload] followup json failed: {json_path} err={exc}")
+                else:
+                    # 若結果資料夾不存在，退回上傳原版 JSON
+                    logging.warning("Followup result dir not found: %s", result_dir)
+                    try:
+                        resp = upload_json_aiteam(json_file_n)
+                        logging.info("Upload original json: %s resp=%s", json_file_n, resp)
+                        print(f"[Upload] original json={json_file_n} resp={resp}")
+                    except Exception as exc:
+                        logging.error("Upload original json failed: %s", json_file_n, exc_info=True)
+                        print(f"[Upload] original json failed: {json_file_n} err={exc}")
+            else:
+                # followup 未執行或無模型時，上傳原版 JSON
+                try:
+                    resp = upload_json_aiteam(json_file_n)
+                    logging.info("Upload original json: %s resp=%s", json_file_n, resp)
+                    print(f"[Upload] original json={json_file_n} resp={resp}")
+                except Exception as exc:
+                    logging.error("Upload original json failed: %s", json_file_n, exc_info=True)
+                    print(f"[Upload] original json failed: {json_file_n} err={exc}")
         
         else:
             logging.error('!!! ' + str(ID) + ' Insufficient GPU Memory.')

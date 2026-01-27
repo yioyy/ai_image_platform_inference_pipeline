@@ -7,6 +7,8 @@
 - [ ] 1.6 定義輸入根目錄（rename_nifti）與輸出根目錄（Deep_FollowUp）
 - [ ] 1.7 定義 case 資料夾定位規則（patient_id + study_date）
 - [ ] 1.8 明確輸出檔案與覆寫策略（Pred_*_platform_json → Followup_*_platform_json_new）
+- [ ] 1.9 若指定 model/model_type，需驗證存在於 needFollowup.models
+- [ ] 1.10 驗證失敗時需記錄 log 並跳過執行
 
 ## 2. NIfTI 對位流程（沿用 v1）
 - [ ] 2.1 規範必要檔名（Pred_<Model> / SynthSEG_<Model> / Pred_<Model>_A1.dcm / Pred_<Model>_platform_json.json）

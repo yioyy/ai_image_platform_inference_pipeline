@@ -86,7 +86,7 @@ def pipeline_followup_v3_platform(
     platform_json_name: Optional[str] = None,
     path_followup_root: Optional[Path] = None,
     fsl_flirt_path: str = "/usr/local/fsl/bin/flirt",
-) -> List[Path]:
+) -> Tuple[List[Path], bool]:
     LOGGER.info("Load input json: %s", input_json)
     print(f"[FollowUp] Load input json: {input_json}")
     payload = _read_json(input_json)
@@ -108,36 +108,67 @@ def pipeline_followup_v3_platform(
     if not studies:
         raise ValueError("needFollowup 為空，無可比對的 study")
 
-    current_base = _select_current_study(
-        studies,
-        case_id=case_id,
-        case_date_key=case_id_date_key,
-    )
-    LOGGER.info("Current case_id=%s study_date=%s", current_base.case_id, current_base.study_date_key)
-    print(f"[FollowUp] Current case_id={current_base.case_id} study_date={current_base.study_date_key}")
+    if not case_id_date_key:
+        raise ValueError("無法解析 case_id 的日期，請提供正確 case_id")
+
+    if case_id and not any(item.case_id == case_id for item in studies):
+        LOGGER.info("Inject case_id study for comparison: %s", case_id)
+        print(f"[FollowUp] Inject case_id study for comparison: {case_id}")
+        studies.append(_build_case_id_study(path_process, case_id, model, model_type))
+    if not studies:
+        raise ValueError("needFollowup 為空，無可比對的 study")
+
+    input_study = next((item for item in studies if item.case_id == case_id), None)
+    if not input_study:
+        raise ValueError("找不到輸入 case_id 對應的 study")
     model_type_list = _resolve_model_types(studies, model=model, model_type=model_type)
     if not model_type_list:
-        raise ValueError("找不到可用的 model_type")
+        LOGGER.warning(
+            "指定模型未出現在 needFollowup.models，跳過執行：model=%s model_type=%s",
+            model or "",
+            model_type or "",
+        )
+        print(
+            f"[FollowUp] Skip: model not in needFollowup.models (model={model or ''} model_type={model_type or ''})"
+        )
+        return [], False
 
     LOGGER.info("Resolved model_type_list=%s", model_type_list)
     print(f"[FollowUp] Resolved model_type_list={model_type_list}")
+
     outputs: List[Path] = []
+    newer = [item for item in studies if item.study_date_key > case_id_date_key]
+    older = [item for item in studies if item.study_date_key < case_id_date_key]
+    if not newer:
+        targets = [(input_study, older)]
+    else:
+        targets = [(input_study, older)]
+        for item in newer:
+            targets.append((item, [input_study]))
+
     for mt in model_type_list:
         model_name = _model_name_from_type(mt)
-        LOGGER.info("Build model item: model_type=%s model_name=%s", mt, model_name)
-        print(f"[FollowUp] Build model item: model_type={mt} model_name={model_name}")
-        current = _build_model_item(current_base, mt, model_name, path_process, platform_json_name)
-        prior_items = _build_prior_items(studies, current_base, mt, model_name, path_process, platform_json_name)
-        LOGGER.info("Prior items count=%d", len(prior_items))
-        print(f"[FollowUp] Prior items count={len(prior_items)}")
-        output = _run_model_followup(
-            current=current,
-            priors=prior_items,
-            path_followup_root=path_followup_root,
-            fsl_flirt_path=fsl_flirt_path,
-        )
-        outputs.append(output)
-    return outputs
+        for current_base, prior_bases in targets:
+            LOGGER.info("Build model item: model_type=%s model_name=%s", mt, model_name)
+            print(f"[FollowUp] Build model item: model_type={mt} model_name={model_name}")
+            current = _build_model_item(current_base, mt, model_name, path_process, platform_json_name)
+            prior_items = [
+                _build_model_item(item, mt, model_name, path_process, platform_json_name)
+                for item in prior_bases
+                if mt in item.model_types and item.case_id != current_base.case_id
+            ]
+            LOGGER.info("Prior items count=%d", len(prior_items))
+            print(f"[FollowUp] Prior items count={len(prior_items)}")
+            output = _run_model_followup(
+                current=current,
+                priors=prior_items,
+                path_followup_root=path_followup_root,
+                fsl_flirt_path=fsl_flirt_path,
+                output_date_key=current_base.study_date_key,
+                output_root_case_id=input_study.case_id,
+            )
+            outputs.append(output)
+    return outputs, True
 
 
 def _run_model_followup(
@@ -146,8 +177,10 @@ def _run_model_followup(
     priors: List[ModelStudyItem],
     path_followup_root: Optional[Path],
     fsl_flirt_path: str,
+    output_date_key: str,
+    output_root_case_id: str,
 ) -> Path:
-    process_root = _build_process_root(current.base.case_id, path_followup_root)
+    process_root = _build_process_root(output_root_case_id, path_followup_root)
     comparisons_root = process_root / "comparisons" / current.model_name
     result_root = process_root / "result"
     LOGGER.info("Process root: %s", process_root)
@@ -218,7 +251,7 @@ def _run_model_followup(
 
     _replace_sorted_slice(current_payload, current.model_type, sorted_slice_entries)
 
-    output_path = result_root / f"Followup_{current.model_name}_platform_json_new.json"
+    output_path = result_root / f"Followup_{current.model_name}_platform_json_new_{output_date_key}.json"
     LOGGER.info("Write output json: %s", output_path)
     print(f"[FollowUp] Write output json: {output_path}")
     output_path.write_text(json.dumps(current_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -431,6 +464,7 @@ def _build_followup_entry(
     entry["mask_index"] = _safe_str(prior_inst.get("mask_index")) if prior_inst else ""
     entry["old_diameter"] = _safe_str(prior_inst.get("diameter")) if prior_inst else ""
     entry["old_volume"] = _safe_str(prior_inst.get("volume")) if prior_inst else ""
+    entry["old_prob_max"] = _safe_str(prior_inst.get("prob_max")) if prior_inst else ""
     entry["jump_study_instance_uid"] = prior_item.base.study_instance_uid
     entry["jump_series_instance_uid"] = _safe_str(prior_series_uid) if prior_inst else ""
     entry["jump_sop_instance_uid"] = _safe_str(prior_inst.get("dicom_sop_instance_uid")) if prior_inst else ""
@@ -497,6 +531,7 @@ def _build_regress_placeholder(
             "mask_index": _safe_str(prior_inst.get("mask_index")),
             "old_diameter": _safe_str(prior_inst.get("diameter")),
             "old_volume": _safe_str(prior_inst.get("volume")),
+            "old_prob_max": _safe_str(prior_inst.get("prob_max")),
             "status": "regress",
             "study_date": prior_item.base.study_date_raw,
             "main_seg_slice": _safe_int(prior_inst.get("main_seg_slice")),
@@ -849,19 +884,23 @@ def _resolve_model_types(
     model: Optional[str],
     model_type: Optional[int],
 ) -> List[int]:
+    available: List[int] = []
+    for item in studies:
+        for mt in item.model_types:
+            if mt not in available:
+                available.append(mt)
     if model_type:
+        if model_type not in available:
+            return []
         return [model_type]
     if model:
         mt = MODEL_TYPE_BY_NAME.get(model.strip().lower())
-        if mt:
-            return [mt]
-        raise ValueError(f"不支援的 model：{model}")
-    out: List[int] = []
-    for item in studies:
-        for mt in item.model_types:
-            if mt not in out:
-                out.append(mt)
-    return out
+        if not mt:
+            raise ValueError(f"不支援的 model：{model}")
+        if mt not in available:
+            return []
+        return [mt]
+    return available
 
 
 def _build_model_item(
@@ -1371,7 +1410,7 @@ def main(argv: List[str]) -> int:
         )
 
     try:
-        outputs = pipeline_followup_v3_platform(
+        outputs, has_model = pipeline_followup_v3_platform(
             input_json=Path(args.input_json),
             path_process=Path(args.path_process),
             model=args.model or None,
@@ -1381,6 +1420,9 @@ def main(argv: List[str]) -> int:
             path_followup_root=Path(args.path_followup_root) if args.path_followup_root else None,
             fsl_flirt_path=args.fsl_flirt_path,
         )
+        if not has_model:
+            LOGGER.warning("Skip follow-up: model/model_type not in needFollowup.models")
+            print("[FollowUp] Skip: model/model_type not in needFollowup.models")
         for output in outputs:
             print(f"[Done] output={output}")
             LOGGER.info("[Done] output=%s", output)

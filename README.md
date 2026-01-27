@@ -163,6 +163,10 @@ python pipeline_aneurysm_tensorflow.py \
 conda deactivate
 ```
 
+#### Follow-up（可選）
+- 若有提供 `--input_json`（檔案路徑或 JSON 內容），會在動脈瘤推論後執行 followup-v3 平台流程並上傳結果。
+- 未提供 `--input_json` 則跳過 followup，僅上傳原版 JSON。
+
 ---
 
 ### 模組 2: 急性腦梗塞分析
