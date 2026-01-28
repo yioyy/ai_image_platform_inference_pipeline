@@ -167,6 +167,7 @@ conda deactivate
 - 若有提供 `--input_json`（檔案路徑或 JSON 內容），會在動脈瘤推論後執行 followup-v3 平台流程並上傳結果。
 - 未提供 `--input_json` 則跳過 followup，僅上傳原版 JSON。
 - 也就是：動脈瘤模組在**有提供 `--input_json` 時會自動做 followup**。
+- Follow-up 會讀 `RADX_FOLLOWUP_CASE_ROOT`（case 資料夾根目錄，放 `Pred_*` / `SynthSEG_*` / `Pred_*_platform_json.json`），並輸出到 `RADX_FOLLOWUP_ROOT`（建立 `Deep_FollowUp/<case_id>/...`）。
 
 ---
 
