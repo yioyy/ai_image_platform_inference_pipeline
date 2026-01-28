@@ -8,6 +8,7 @@ Created on Tue Sep 22 13:18:23 2020
 """
 import warnings
 import os
+import sys
 import time
 import logging
 import shutil
@@ -24,6 +25,23 @@ from after_run_wmh import after_run_wmh
 
 warnings.filterwarnings("ignore")  # 忽略警告输出
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+
+# Optional env-file loader (for test vs official)
+try:
+    from config.load_env import load_env_from_default_locations
+except Exception:
+    load_env_from_default_locations = None
+
+
+# 讀取環境變數時的 path 清理
+def _clean_env_path(p: str) -> str:
+    return os.path.normpath(str(p).strip().replace("\r", "").replace("\n", ""))
+
+
+def _env_path(key: str, default: str) -> str:
+    v = os.getenv(key, "").strip()
+    return _clean_env_path(v) if v else _clean_env_path(default)
 
 
 def pipeline_wmh(ID, 
@@ -111,7 +129,9 @@ def pipeline_wmh(ID,
                     ]
 
                 start = time.time()
-                subprocess.run(cmd)
+                synthseg_env = os.environ.copy()
+                synthseg_env["CUDA_VISIBLE_DEVICES"] = str(gpu_n)
+                subprocess.run(cmd, env=synthseg_env)
                 print(f"[Done AI SynthSEG Inference... ] spend {time.time() - start:.0f} sec")
                 logging.info(f"[Done AI SynthSEG Inference... ] spend {time.time() - start:.0f} sec")
 
@@ -203,7 +223,8 @@ def pipeline_wmh(ID,
                 logging.error('!!! ' + ID + ' post-processing failed.')
                 return logging.error('!!! ' + ID + ' post-processing failed.')      
 
-            after_run_success = after_run_wmh(path_nnunet, path_output, ID, path_code)
+            group_id = int(os.getenv("RADX_WMH_GROUP_ID", "56") or "56")
+            after_run_success = after_run_wmh(path_nnunet, path_output, ID, path_code, group_id=group_id)
             if not after_run_success:
                 logging.error('!!! ' + ID + ' after_run failed.')
                 return logging.error('!!! ' + ID + ' after_run failed.')
@@ -220,32 +241,45 @@ def pipeline_wmh(ID,
 
 #其意義是「模組名稱」。如果該檔案是被引用，其值會是模組名稱；但若該檔案是(透過命令列)直接執行，其值會是 __main__；。
 if __name__ == '__main__':
+    # Load env file (RADX_ENV_FILE or code/config/radax.env) if present
+    if load_env_from_default_locations:
+        try:
+            load_env_from_default_locations()
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--ID', type=str, default = '01550089_20251117_MR_21411150023', help='目前執行的case的patient_id or study id')
     parser.add_argument('--Inputs', type=str, nargs='+', default = ['/data/4TB1/pipeline/chuan/example_input/01550089_20251117_MR_21411150023/T2FLAIR_AXI.nii.gz'], help='用於輸入的檔案')
     parser.add_argument('--DicomDir', type=str, nargs='+', default = ['/data/4TB1/pipeline/chuan/example_inputDicom/01550089_20251117_MR_21411150023/T2FLAIR_AXI/'], help='用於輸入的檔案')
     parser.add_argument('--Output_folder', type=str, default = '/data/4TB1/pipeline/chuan/example_output/01550089_20251117_MR_21411150023/',help='用於輸出結果的資料夾')    
+    parser.add_argument('--gpu_n', type=int, default = 0, help='使用哪一顆gpu')
     args = parser.parse_args()
 
     ID = str(args.ID)
     Inputs = args.Inputs  # 將列表合併為字符串，保留順序
     DicomDirs = args.DicomDir #對應的dicom資料夾，用來做dicom-seg
     path_output = str(args.Output_folder)
+    if "--Output_folder" not in sys.argv:
+        path_output = _env_path("RADX_OUTPUT_ROOT", path_output)
     print('DicomDirs:', DicomDirs)
 
     #下面設定各個路徑
-    path_code = '/data/4TB1/pipeline/chuan/code/'
-    path_process = '/data/4TB1/pipeline/chuan/process/'  #前處理dicom路徑(test case)
-    path_nnunet_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset015_DeepLacune/nnUNetTrainer__nnUNetPlans__2d'
+    path_code = _env_path("RADX_CODE_ROOT", "/data/4TB1/pipeline/chuan/code/")
+    path_process = _env_path("RADX_PROCESS_ROOT", "/data/4TB1/pipeline/chuan/process/")  #前處理dicom路徑(test case)
+    path_nnunet_model = _env_path(
+        "RADX_WMH_MODEL",
+        "/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset015_DeepLacune/nnUNetTrainer__nnUNetPlans__2d",
+    )
 
     path_processModel = os.path.join(path_process, 'Deep_WMH')  #前處理dicom路徑(test case)
     #path_processID = os.path.join(path_processModel, ID)  #前處理dicom路徑(test case)
 
     #這裡先沒有dicom
-    path_json = '/data/4TB1/pipeline/chuan/json/'  #存放json的路徑，回傳執行結果
+    path_json = _env_path("RADX_JSON_ROOT", "/data/4TB1/pipeline/chuan/json/")  #存放json的路徑，回傳執行結果
     #json_path_name = os.path.join(path_json, 'Pred_Infarct.json')
-    path_log = '/data/4TB1/pipeline/chuan/log/'  #log資料夾
-    gpu_n = 0  #使用哪一顆gpu
+    path_log = _env_path("RADX_LOG_ROOT", "/data/4TB1/pipeline/chuan/log/")  #log資料夾
+    gpu_n = int(args.gpu_n)  #使用哪一顆gpu
 
     # 建置資料夾
     os.makedirs(path_processModel, exist_ok=True) # 如果資料夾不存在就建立，製作nii資料夾

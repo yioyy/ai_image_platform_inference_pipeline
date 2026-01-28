@@ -13,6 +13,7 @@ warnings.filterwarnings("ignore") # 忽略警告输出
 
 # 所有import移到最上方，刪除重複與未使用的import
 import os
+import sys
 import time
 import numpy as np
 import logging
@@ -52,6 +53,23 @@ from pipeline_followup_v3_platform import pipeline_followup_v3_platform
 
 import pathlib
 import requests
+
+
+# Optional env-file loader (for test vs official)
+try:
+    from config.load_env import load_env_from_default_locations
+except Exception:
+    load_env_from_default_locations = None
+
+
+# 讀取環境變數時的 path 清理
+def _clean_env_path(p: str) -> str:
+    return os.path.normpath(str(p).strip().replace("\r", "").replace("\n", ""))
+
+
+def _env_path(key: str, default: str) -> str:
+    v = os.getenv(key, "").strip()
+    return _clean_env_path(v) if v else _clean_env_path(default)
 
 
 #會使用到的一些predict技巧
@@ -235,7 +253,9 @@ def pipeline_aneurysm(ID,
             #result = subprocess.run(cmd, capture_output=True, text=True) 這會讓 subprocess.run() 自動幫你捕捉 stdout 和 stderr 的輸出，不然預設是印在 terminal 上，不會儲存。
             # 執行 subprocess
             start = time.time()
-            subprocess.run(cmd)
+            synthseg_env = os.environ.copy()
+            synthseg_env["CUDA_VISIBLE_DEVICES"] = str(gpu_n)
+            subprocess.run(cmd, env=synthseg_env)
             print(f"[Done SynthSEG AI Inference... ] spend {time.time() - start:.0f} sec")
             logging.info(f"[Done SynthSEG AI Inference... ] spend {time.time() - start:.0f} sec")
 
@@ -305,12 +325,12 @@ def pipeline_aneurysm(ID,
 
             Series = ['MRA_BRAIN', 'MIP_Pitch', 'MIP_Yaw']
             #group_id1 = 53 # 君彥的模型
-            group_id2 = 56 # nnU-Net的模型
+            group_id = int(os.getenv("RADX_ANEURYSM_GROUP_ID", "56") or "56")  # nnU-Net的模型
             #group_id2 = 57 # nnU-Net 低threshold的模型
             # model_id = '924d1538-597c-41d6-bc27-4b0b359111cf'
             start_json = time.time()
             #make_aneurysm_pred_json(ID, pathlib.Path(path_nnunet), model_id)  #(_id, path_root, group_id)
-            make_pred_json(ID, pathlib.Path(path_nnunet), group_id2)  #(_id, path_root, group_id)
+            make_pred_json(ID, pathlib.Path(path_nnunet), group_id)  #(_id, path_root, group_id)
             #make_pred_json(excel_file, path_dcm, path_nii, path_reslice, path_dicomseg, path_json_out, [ID], Series, group_id)
             print(f"[Done make_pred_json... ] spend {time.time() - start_json:.0f} sec")
             logging.info(f"[Done make_pred_json... ] spend {time.time() - start_json:.0f} sec")
@@ -336,6 +356,9 @@ def pipeline_aneurysm(ID,
             shutil.copy(os.path.join(path_processID, 'Vessel_16.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm_Vessel16.nii.gz'))
             shutil.copy(os.path.join(path_json_out_n, ID + '_platform_json.json'), os.path.join(path_output, 'Pred_Aneurysm.json'))
             shutil.copy(os.path.join(path_json_out_n, ID + '_platform_json.json'), os.path.join(path_output, 'Pred_Aneurysm_platform_json.json'))
+
+            #SynthSEG要複製到output資料夾
+            shutil.copy(os.path.join(path_nii_n, 'NEW_MRA_BRAIN_synthseg33.nii.gz'), os.path.join(path_output, 'SynthSEG_Aneurysm.nii.gz'))
 
             #radax步驟，接下來完成複製檔案到指定資料夾跟打api通知
             # upload_dir = '/home/david/ai-inference-result' #目的資料夾
@@ -423,7 +446,12 @@ def pipeline_aneurysm(ID,
             logging.info(f"[Done All Pipeline!!! ] spend {time.time() - start:.0f} sec")
             logging.info('!!! ' + ID +  ' post_aneurysm finish.')
 
-            followup_root = pathlib.Path("/data/4TB1/pipeline/chuan/process")
+            followup_case_root = pathlib.Path(
+                os.getenv("RADX_FOLLOWUP_CASE_ROOT", os.getenv("RADX_FOLLOWUP_ROOT", path_process))
+            )
+            followup_out_root = pathlib.Path(
+                os.getenv("RADX_FOLLOWUP_ROOT", path_process)
+            )
             # 若有提供 input_json（可能是檔案路徑或 JSON 內容）
             if input_json:
                 # 若是檔案路徑，直接使用
@@ -450,12 +478,12 @@ def pipeline_aneurysm(ID,
                 try:
                     outputs, has_model = pipeline_followup_v3_platform(
                         input_json=pathlib.Path(input_json_path),
-                        path_process=pathlib.Path("/data/4TB1/pipeline/chuan/process/"),
+                        path_process=followup_case_root,
                         model="Aneurysm",
                         model_type=1,
                         case_id=ID,
                         platform_json_name="Pred_Aneurysm_platform_json.json",
-                        path_followup_root=followup_root,
+                        path_followup_root=followup_out_root,
                     )
                     logging.info(
                         "Followup-v3 outputs=%d has_model=%s", len(outputs), has_model
@@ -463,10 +491,10 @@ def pipeline_aneurysm(ID,
                     print(
                         f"[FollowUp] outputs={len(outputs)} has_model={has_model}"
                     )
-                except Exception:
+                except Exception as exc:
                     has_model = False
                     logging.error("Followup-v3 platform failed.", exc_info=True)
-                    print("[FollowUp] Error: followup-v3 platform failed.")
+                    print(f"[FollowUp] Error: followup-v3 platform failed: {exc!r}")
 
                 print(f"[Done followup-v3 platform!!! ] spend {time.time() - start_followup:.0f} sec")
                 logging.info(f"[Done followup-v3 platform!!! ] spend {time.time() - start_followup:.0f} sec")
@@ -532,18 +560,28 @@ def pipeline_aneurysm(ID,
 
 #其意義是「模組名稱」。如果該檔案是被引用，其值會是模組名稱；但若該檔案是(透過命令列)直接執行，其值會是 __main__；。
 if __name__ == '__main__':
+    # Load env file (RADX_ENV_FILE or code/config/radax.env) if present
+    if load_env_from_default_locations:
+        try:
+            load_env_from_default_locations()
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--ID', type=str, default = '17390820_20250604_MR_21406040004', help='目前執行的case的patient_id or study id')
     parser.add_argument('--Inputs', type=str, nargs='+', default = ['/data/4TB1/pipeline/chuan/example_input/17390820_20250604_MR_21406040004/MRA_BRAIN.nii.gz'], help='用於輸入的檔案')
     parser.add_argument('--DicomDir', type=str, nargs='+', default = ['/data/4TB1/pipeline/chuan/example_inputDicom/17390820_20250604_MR_21406040004/MRA_BRAIN/'], help='用於輸入的檔案')
     parser.add_argument('--Output_folder', type=str, default = '/data/4TB1/pipeline/chuan/example_output/',help='用於輸出結果的資料夾')    
     parser.add_argument('--input_json', type=str, default = '', help='followup-v3 平台輸入 json 內容或檔案路徑')
+    parser.add_argument('--gpu_n', type=int, default = 0, help='使用哪一顆gpu')
     args = parser.parse_args()
 
     ID = str(args.ID)
     Inputs = args.Inputs  # 將列表合併為字符串，保留順序
     DicomDirs = args.DicomDir #對應的dicom資料夾，用來做dicom-seg
     path_output = str(args.Output_folder)
+    if "--Output_folder" not in sys.argv:
+        path_output = _env_path("RADX_OUTPUT_ROOT", path_output)
     input_json = str(args.input_json)
     #path_output = args.Output_folder
     # 避免命令列/文字檔帶入 \r\n 造成路徑錯誤
@@ -557,21 +595,30 @@ if __name__ == '__main__':
     #需要安裝 pip install pylibjpeg pylibjpeg-libjpeg pylibjpeg-openjpeg => 先不壓縮，因為壓縮需要numpy > 2
 
     #下面設定各個路徑
-    path_code = '/data/4TB1/pipeline/chuan/code/'
-    path_process = '/data/4TB1/pipeline/chuan/process/'  #前處理dicom路徑(test case)
-    path_brain_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset134_DeepMRABrain/nnUNetTrainer__nnUNetPlans__3d_fullres'
-    path_vessel_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset135_DeepMRAVessel/nnUNetTrainer__nnUNetPlans__3d_fullres'
-    path_aneurysm_model = '/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres'
+    path_code = _env_path("RADX_CODE_ROOT", "/data/4TB1/pipeline/chuan/code/")
+    path_process = _env_path("RADX_PROCESS_ROOT", "/data/4TB1/pipeline/chuan/process/")  #前處理dicom路徑(test case)
+    path_brain_model = _env_path(
+        "RADX_BRAIN_MODEL",
+        "/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset134_DeepMRABrain/nnUNetTrainer__nnUNetPlans__3d_fullres",
+    )
+    path_vessel_model = _env_path(
+        "RADX_VESSEL_MODEL",
+        "/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset135_DeepMRAVessel/nnUNetTrainer__nnUNetPlans__3d_fullres",
+    )
+    path_aneurysm_model = _env_path(
+        "RADX_ANEURYSM_MODEL",
+        "/data/4TB1/pipeline/chuan/code/nnUNet/nnUNet_results/Dataset080_DeepAneurysm/nnUNetTrainer__nnUNetPlans__3d_fullres",
+    )
     path_processModel = os.path.join(path_process, 'Deep_Aneurysm')  #前處理dicom路徑(test case)
     #path_processID = os.path.join(path_processModel, ID)  #前處理dicom路徑(test case)
 
     #這裡先沒有dicom
-    path_json = '/data/4TB1/pipeline/chuan/json/'  #存放json的路徑，回傳執行結果
+    path_json = _env_path("RADX_JSON_ROOT", "/data/4TB1/pipeline/chuan/json/")  #存放json的路徑，回傳執行結果
     #json_path_name = os.path.join(path_json, 'Pred_Infarct.json')
-    path_log = '/data/4TB1/pipeline/chuan/log/'  #log資料夾
+    path_log = _env_path("RADX_LOG_ROOT", "/data/4TB1/pipeline/chuan/log/")  #log資料夾
 
     #自訂模型
-    gpu_n = 0  #使用哪一顆gpu
+    gpu_n = int(args.gpu_n)
 
     # 建置資料夾
     os.makedirs(path_processModel, exist_ok=True) # 如果資料夾不存在就建立，製作nii資料夾

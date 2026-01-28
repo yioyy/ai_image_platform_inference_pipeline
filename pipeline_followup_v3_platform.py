@@ -461,7 +461,7 @@ def _build_followup_entry(
     entry: Dict[str, Any] = {}
     entry["status"] = status
     entry["study_date"] = prior_item.base.study_date_raw
-    entry["mask_index"] = _safe_str(prior_inst.get("mask_index")) if prior_inst else ""
+    entry["mask_index"] = _safe_int(prior_inst.get("mask_index")) if prior_inst else 0
     entry["old_diameter"] = _safe_str(prior_inst.get("diameter")) if prior_inst else ""
     entry["old_volume"] = _safe_str(prior_inst.get("volume")) if prior_inst else ""
     entry["old_prob_max"] = _safe_str(prior_inst.get("prob_max")) if prior_inst else ""
@@ -528,7 +528,7 @@ def _build_regress_placeholder(
 
     placeholder["followup"] = [
         {
-            "mask_index": _safe_str(prior_inst.get("mask_index")),
+            "mask_index": _safe_int(prior_inst.get("mask_index")),
             "old_diameter": _safe_str(prior_inst.get("diameter")),
             "old_volume": _safe_str(prior_inst.get("volume")),
             "old_prob_max": _safe_str(prior_inst.get("prob_max")),

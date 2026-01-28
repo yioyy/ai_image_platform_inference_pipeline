@@ -19,7 +19,9 @@ from util_aneurysm import orthanc_zip_upload, upload_json_aiteam
 from infarct_pipeline import InfarctPipeline
 
 
-def after_run(path_nnunet: str, path_output: str, patient_id: str, path_code: str) -> bool:
+def after_run(
+    path_nnunet: str, path_output: str, patient_id: str, path_code: str, group_id: int | None = None
+) -> bool:
     """執行梗塞後處理流程並上傳結果。"""
     del path_output  # 尚未使用，預留介面
     try:
@@ -59,10 +61,12 @@ def after_run(path_nnunet: str, path_output: str, patient_id: str, path_code: st
         pipeline.run_all()
 
         make_infarct_pred_json = _load_make_pred_json(path_code)
+        if group_id is None:
+            group_id = int(os.getenv("RADX_INFARCT_GROUP_ID", "56") or "56")
         json_path = make_infarct_pred_json(
             _id=patient_id,
             path_root=pathlib.Path(path_nnunet),
-            group_id=56,
+            group_id=group_id,
         )
 
         try:
