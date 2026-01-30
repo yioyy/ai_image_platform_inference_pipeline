@@ -46,8 +46,13 @@ follow_up: [
       ]
     },
     "sorted": [
-      {"current_slice": 0, "prior_slice_list": [0]},
-      {"current_slice": 1, "prior_slice_list": [1,2]}
+      {"current_slice": 1, "prior_slice": 2},
+      {"current_slice": 2, "prior_slice": 3}
+    ],
+    "reverse-sorted": [
+      {"prior_slice": 1, "current_slice": 1},
+      {"prior_slice": 2, "current_slice": 1},
+      {"prior_slice": 3, "current_slice": 2}
     ]
   }
 ]
@@ -62,7 +67,10 @@ follow_up: [
 - follow_up 以日期新者為主體（current），`current_study_date` 必須大於 `prior_study_date`
 
 ### sorted 欄位
-以 current 為主體，一對多對應：
-建議使用 `{"current_slice": int, "prior_slice_list": int[]}`。
-如需相容舊格式，可提供轉換器或輸出雙格式。
+以 current 為主體，一對一嚴格對應：
+建議使用 `{"current_slice": int, "prior_slice": int}`。
+
+### reverse-sorted 欄位
+以 prior 為主體，一對一嚴格對應：
+建議使用 `{"prior_slice": int, "current_slice": int}`。
 

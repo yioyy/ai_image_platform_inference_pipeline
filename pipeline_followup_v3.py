@@ -356,7 +356,12 @@ def _build_followup_entry(
             }
         )
 
-    sorted_mapping = _build_sorted_mapping(
+    LOGGER.info(
+        "Build sorted mapping: current_slices=%d prior_slices=%d",
+        current_pred.shape[2],
+        prior_pred_reg.shape[2],
+    )
+    sorted_mapping, reverse_sorted_mapping = _build_sorted_mapping_one_based(
         current_slices=current_pred.shape[2],
         prior_slices=prior_pred_reg.shape[2],
         mat=mat,
@@ -375,21 +380,132 @@ def _build_followup_entry(
             "regress": regress_entries,
         },
         "sorted": sorted_mapping,
+        "reverse-sorted": reverse_sorted_mapping,
     }
 
 
-def _build_sorted_mapping(*, current_slices: int, prior_slices: int, mat: np.ndarray) -> List[Dict[str, Any]]:
-    mapping: Dict[int, List[int]] = {i: [] for i in range(current_slices)}
-    for z_src in range(prior_slices):
-        z_tgt = float(mat[2, 2] * z_src + mat[2, 3])
-        z_idx = int(np.rint(z_tgt))
-        if z_idx < 0:
-            z_idx = 0
-        elif z_idx >= current_slices:
-            z_idx = current_slices - 1
-        mapping[z_idx].append(z_src)
+def _build_sorted_mapping_one_based(
+    *, current_slices: int, prior_slices: int, mat: np.ndarray
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if current_slices <= 0 or prior_slices <= 0:
+        return [], []
 
-    return [{"current_slice": z, "prior_slice_list": mapping[z]} for z in range(current_slices)]
+    inv_mat = _safe_inv(mat)
+    current_candidates: List[List[int]] = [[] for _ in range(current_slices)]
+    for current_idx in range(current_slices):
+        z_tgt = float(inv_mat[2, 2] * current_idx + inv_mat[2, 3])
+        prior_idx = _clamp_index(int(np.rint(z_tgt)), prior_slices)
+        current_candidates[current_idx].append(prior_idx)
+    empty_current = sum(1 for cands in current_candidates if not cands)
+
+    current_choice: List[Optional[int]] = [_select_candidate(cands) for cands in current_candidates]
+    current_choice_filled = _fill_empty_choices(current_choice)
+    sorted_list = [
+        {"current_slice": idx + 1, "prior_slice": prior_idx + 1}
+        for idx, prior_idx in enumerate(current_choice_filled)
+    ]
+
+    prior_candidates: List[List[int]] = [[] for _ in range(prior_slices)]
+    for prior_idx in range(prior_slices):
+        z_tgt = float(mat[2, 2] * prior_idx + mat[2, 3])
+        current_idx = _clamp_index(int(np.rint(z_tgt)), current_slices)
+        prior_candidates[prior_idx].append(current_idx)
+    empty_prior = sum(1 for cands in prior_candidates if not cands)
+
+    prior_choice: List[Optional[int]] = [_select_candidate(cands) for cands in prior_candidates]
+    prior_choice_filled = _fill_empty_choices(prior_choice)
+    reverse_sorted_list = [
+        {"prior_slice": idx + 1, "current_slice": current_idx + 1}
+        for idx, current_idx in enumerate(prior_choice_filled)
+    ]
+
+    LOGGER.info(
+        "sorted fill stats: empty_current=%d empty_prior=%d",
+        empty_current,
+        empty_prior,
+    )
+    return sorted_list, reverse_sorted_list
+
+
+def _clamp_index(value: int, size: int) -> int:
+    if value < 0:
+        return 0
+    if value >= size:
+        return size - 1
+    return value
+
+
+def _select_candidate(cands: List[int]) -> Optional[int]:
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0]
+    sorted_cands = sorted(cands)
+    median_val = float(np.median(sorted_cands))
+    chosen = min(sorted_cands, key=lambda v: (abs(v - median_val), v))
+    if len(sorted_cands) > 2:
+        LOGGER.info(
+            "sorted median pick: candidates=%s median=%.2f chosen=%d",
+            sorted_cands,
+            median_val,
+            chosen,
+        )
+    return chosen
+
+
+def _fill_empty_choices(values: List[Optional[int]]) -> List[int]:
+    if not values:
+        return []
+    if all(v is None for v in values):
+        return [0 for _ in values]
+
+    filled: List[Optional[int]] = list(values)
+    first_idx = next(i for i, v in enumerate(filled) if v is not None)
+    for i in range(0, first_idx):
+        filled[i] = filled[first_idx]
+
+    last_idx = max(i for i, v in enumerate(filled) if v is not None)
+    for i in range(last_idx + 1, len(filled)):
+        filled[i] = filled[last_idx]
+
+    prev_idx: List[int] = [-1] * len(filled)
+    last = -1
+    for i, val in enumerate(filled):
+        if val is not None:
+            last = i
+        prev_idx[i] = last
+
+    next_idx: List[int] = [-1] * len(filled)
+    nxt = -1
+    for i in range(len(filled) - 1, -1, -1):
+        if filled[i] is not None:
+            nxt = i
+        next_idx[i] = nxt
+
+    for i, val in enumerate(filled):
+        if val is not None:
+            continue
+        prev_i = prev_idx[i]
+        next_i = next_idx[i]
+        if prev_i == -1 and next_i == -1:
+            filled[i] = 0
+            continue
+        if prev_i == -1:
+            filled[i] = filled[next_i]
+            continue
+        if next_i == -1:
+            filled[i] = filled[prev_i]
+            continue
+        left_val = filled[prev_i]
+        right_val = filled[next_i]
+        if left_val is None or right_val is None:
+            filled[i] = left_val if left_val is not None else right_val
+            continue
+        left_dist = i - prev_i
+        right_dist = next_i - i
+        filled[i] = left_val if left_dist <= right_dist else right_val
+
+    return [int(v) if v is not None else 0 for v in filled]
 
 
 def _map_slice_index(value: int, *, mat: np.ndarray, direction: str) -> int:
@@ -483,7 +599,7 @@ def _build_study_item(
     case_dir = _find_case_dir(path_process, patient_id, study_date_key)
     case_id = case_dir.name
     pred_file = case_dir / f"Pred_{model}.nii.gz"
-    synthseg_file = case_dir / f"SynthSEG_{model}.nii.gz"
+    synthseg_file = case_dir / _default_synthseg_filename(model)
     pred_json_file = case_dir / prediction_json_name
 
     _ensure_file(pred_file, "Pred NIfTI")
@@ -504,6 +620,13 @@ def _build_study_item(
         synthseg_file=synthseg_file,
         pred_json_file=pred_json_file,
     )
+
+
+def _default_synthseg_filename(model: str) -> str:
+    model_key = model.strip().lower()
+    if model_key == "cmb":
+        return "synthseg_SWAN_original_CMB_from_T1BRAVO_AXI_original_CMB.nii.gz"
+    return f"SynthSEG_{model}.nii.gz"
 
 
 def _build_process_root(

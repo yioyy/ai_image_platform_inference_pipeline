@@ -27,12 +27,15 @@ Follow-up 結果輸出至：`/home/david/pipeline/chuan/process/Deep_FollowUp/<c
 
 ### 需要的檔案（依模型命名）
 以模型名稱決定檔名（Aneurysm / CMB）：
-- `Pred_Aneurysm.nii.gz`
-- `SynthSEG_Aneurysm.nii.gz`
-- `Pred_Aneurysm_rdx_aneurysm_pred_json.json`（由 `rdx_aneurysm_pred_json.json` 改名，作為輸出基底）
+  - `Pred_Aneurysm.nii.gz`
+  - `SynthSEG_Aneurysm.nii.gz`
+  - `Pred_Aneurysm_rdx_aneurysm_pred_json.json`（由 `rdx_aneurysm_pred_json.json` 改名，作為輸出基底）
 
 > 若為 CMB，檔名對應為 `Pred_CMB.nii.gz` / `SynthSEG_CMB.nii.gz` / `Pred_CMB_rdx_cmb_pred_json.json`
 > （如需不同 JSON 檔名，可透過參數覆蓋）。
+>
+> CMB 的 SynthSEG 預設檔名為：
+> `synthseg_SWAN_original_CMB_from_T1BRAVO_AXI_original_CMB.nii.gz`
 
 ### 模型判定規則（由 input_json 推導）
 使用 `follow_up_input.json` 中的 `model_id` 判定模型：

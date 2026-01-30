@@ -3,4 +3,5 @@ numpy>=1.21.0
 nibabel>=5.0.0
 httpx>=0.24.0
 orjson>=3.9.0
+Flask
 
