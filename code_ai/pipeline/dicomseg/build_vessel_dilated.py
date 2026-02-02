@@ -2,10 +2,11 @@ import json
 import pathlib
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import numpy as np
 import pydicom
+from scipy import ndimage
 
 from code_ai.pipeline.dicomseg import utils
 
@@ -40,17 +41,41 @@ def execute_rdx_platform_json(
     def _utc_iso_now_ms() -> str:
         return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
+    def _dilation_3d_3kernel(x: np.ndarray, size: tuple[int, int, int] = (3, 3, 3)) -> np.ndarray:
+        kernel = np.ones((size[0], size[1], size[2]), dtype=np.int16)
+        return ndimage.binary_dilation(x, structure=kernel, iterations=15)
+
     # 讀 vessel mask（預設放在 Image_nii/Vessel.nii.gz）
     vessel_path = path_dict["path_nii"].joinpath("Vessel.nii.gz")
     vessel_arr = utils.get_array_to_dcm_axcodes(str(vessel_path))
     mask = (vessel_arr > 0).astype("uint8")
+
+    output_json: Dict[str, Any] = {
+        "inference_id": str(uuid.uuid4()),
+        "inference_timestamp": _utc_iso_now_ms(),
+        "input_study_instance_uid": [input_study_instance_uid] if input_study_instance_uid else [],
+        "input_series_instance_uid": [input_series_instance_uid] if input_series_instance_uid else [],
+        "model_id": model_id,
+        "patient_id": patient_id,
+        "detections": [],
+    }
+
+    # 空結果處理：沒有任何前景就輸出空 detections
+    if np.count_nonzero(mask) == 0:
+        json_path = path_root.joinpath("rdx_vessel_dilated_json.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(output_json, f, ensure_ascii=False)
+        return json_path
+
+    # dilate vessel mask
+    mask_dilated = _dilation_3d_3kernel(mask).astype("uint8")
 
     # 產生單一 segment 的 DICOM-SEG（檔名需符合 pipeline 期待：MRA_BRAIN_Vessel_A1.dcm）
     from code_ai.pipeline.dicomseg.utils.base import get_dicom_seg_template, make_dicomseg_file  # local import
 
     label_dict = {1: {"SegmentLabel": "Vessel_A1", "color": "red"}}
     template_json = get_dicom_seg_template("VesselDilated", label_dict)
-    seg_ds = make_dicomseg_file(mask, image, first_dcm, source_images, template_json)
+    seg_ds = make_dicomseg_file(mask_dilated, image, first_dcm, source_images, template_json)
 
     dcm_seg_path = path_dict["path_dcmseg"].joinpath("MRA_BRAIN_Vessel_A1.dcm")
     if dcm_seg_path.exists():
@@ -60,22 +85,14 @@ def execute_rdx_platform_json(
     # 重新讀檔，拿 SOP / Series UID（避免有些欄位在 save 後才完整）
     seg_ds_read = pydicom.dcmread(str(dcm_seg_path))
 
-    output_json: Dict[str, Any] = {
-        "inference_id": str(uuid.uuid4()),
-        "inference_timestamp": _utc_iso_now_ms(),
-        "input_study_instance_uid": [input_study_instance_uid] if input_study_instance_uid else [],
-        "input_series_instance_uid": [input_series_instance_uid] if input_series_instance_uid else [],
-        "model_id": model_id,
-        "patient_id": patient_id,
-        "detections": [
-            {
-                "annotated_series_instance_uid": input_series_instance_uid,
-                "series_instance_uid": str(getattr(seg_ds_read, "SeriesInstanceUID", "")),
-                "sop_instance_uid": str(getattr(seg_ds_read, "SOPInstanceUID", "")),
-                "label": "Vessel",
-            }
-        ],
-    }
+    output_json["detections"] = [
+        {
+            "annotated_series_instance_uid": input_series_instance_uid,
+            "series_instance_uid": str(getattr(seg_ds_read, "SeriesInstanceUID", "")),
+            "sop_instance_uid": str(getattr(seg_ds_read, "SOPInstanceUID", "")),
+            "label": "Vessel",
+        }
+    ]
 
     json_path = path_root.joinpath("rdx_vessel_dilated_json.json")
     with open(json_path, "w", encoding="utf-8") as f:
