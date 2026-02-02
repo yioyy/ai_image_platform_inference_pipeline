@@ -1,223 +1,51 @@
-# followup Specification
-
 ## Purpose
-TBD - created by archiving change add-followup-comparison-module. Update Purpose after archive.
+Follow-up 模組用於比較 baseline 與 followup 兩次檢查的 segmentation 結果（Pred 與 SynthSEG），完成影像對位後輸出：
+- `Pred_<model>_followup.nii.gz`：merged prediction（1=new, 2=stable, 3=disappeared）
+- `Followup_<model>_platform_json.json`：follow-up 報告（平台 JSON）
+
 ## Requirements
-### Requirement: 輸入資料驗證
-系統 MUST 驗證輸入資料的完整性與格式正確性。
 
-#### Scenario: 檔案存在性檢查
-- WHEN 提供輸入檔案路徑
-- THEN 系統應檢查所有檔案是否存在
-- AND 檔案不存在時返回清晰錯誤訊息
-- AND 列出缺少的檔案
+### Requirement: 支援兩種入口（file-oriented 與 dicomseg-oriented）
+系統 MUST 支援兩種入口，達成相同輸出目標：
+- **file-oriented**：`pipeline_followup.py`
+- **dicomseg-oriented（零侵入）**：`pipeline_followup_from_dicomseg.py`
 
-#### Scenario: 檔案格式驗證
-- WHEN 載入 NIfTI 檔案
-- THEN 系統應驗證檔案為有效的 .nii.gz 格式
-- AND 檔案可被 nibabel 正確讀取
-- AND 包含必要的 header 資訊
+#### Scenario: file-oriented 入口輸入
+- WHEN 使用者執行 `pipeline_followup.py`
+- THEN 系統 MUST 要求 baseline/followup 各 2 個 NIfTI 輸入：
+  - `Pred_<model>.nii.gz`
+  - `SynthSEG_<model>.nii.gz`
+- AND MUST 要求 baseline/followup 各 1 個平台 JSON：
+  - `Pred_<model>_platform_json.json`
 
-#### Scenario: 影像尺寸檢查
-- WHEN 載入 baseline 與 followup 影像
-- THEN 系統應檢查影像維度是否相容
-- AND 體素間距（voxel spacing）是否合理
-- AND 影像方向（orientation）是否一致
+#### Scenario: dicomseg-oriented 入口輸入
+- WHEN 使用者執行 `pipeline_followup_from_dicomseg.py`
+- THEN 系統 MUST 接受 baseline/followup 各 2 個 DICOM-SEG（Pred + SynthSEG）
+- AND MUST 接受 baseline/followup 的 per-instance headers JSON（無 PixelData）
+- AND THEN 系統 MUST 先重建暫存 NIfTI 後再呼叫 file-oriented 核心流程
 
-#### Scenario: DICOM 資料夾驗證
-- WHEN 提供 DICOM 資料夾路徑
-- THEN 系統應檢查資料夾存在且包含 DICOM 檔案
-- AND 能夠讀取至少一個 DICOM 檔案
-- AND 提取 StudyDate 等必要標籤
+### Requirement: Pred 幾何以 SynthSEG 覆蓋
+系統 MUST 在配準前以 SynthSEG 的 affine/sform/qform 覆蓋 Pred，以確保 voxel grid 一致。
 
-### Requirement: 影像配準
-系統 MUST 執行精確的影像配準以對齊前後檢查。
+#### Scenario: shape 不一致 fail-fast
+- WHEN Pred 與 SynthSEG 的 shape 不一致
+- THEN 系統 MUST 終止並回報清楚錯誤（不可覆蓋幾何）
 
-#### Scenario: 剛性配準
-- WHEN 執行標準配準
-- THEN 系統應使用剛性配準（Rigid Registration）
-- AND 配準應處理平移、旋轉
-- AND 不改變影像形狀或大小
+### Requirement: 配準（followup → baseline）
+系統 MUST 使用 FSL `flirt` 將 followup 影像對位到 baseline，並輸出 `.mat` 與配準後的 NIfTI。
 
-#### Scenario: 多解析度配準
-- WHEN 執行配準
-- THEN 系統應使用多解析度策略
-- AND 先在低解析度粗配準
-- AND 再在原始解析度精配準
-- AND 至少使用 3 個金字塔層級
+### Requirement: merged prediction label 定義（固定）
+系統 MUST 產生 `Pred_<model>_followup.nii.gz`，且 label 定義 MUST 固定為：
+- 1 = new
+- 2 = stable
+- 3 = disappeared
 
-#### Scenario: 配準品質評估
-- WHEN 配準完成
-- THEN 系統應計算 Mutual Information (MI) 分數
-- AND MI 分數應 >0.8 才視為成功
-- AND MI 分數 <0.6 應標記為配準失敗
-- AND 分數在 0.6-0.8 間應發出警告
+### Requirement: follow-up 平台 JSON 輸出
+系統 MUST 產生 `Followup_<model>_platform_json.json`。
 
-#### Scenario: 配準失敗處理
-- WHEN 配準 MI 分數 <0.6
-- THEN 系統應嘗試不同初始化參數重新配準
-- AND 最多重試 2 次
-- AND 仍失敗時提供手動調整選項
-- AND 記錄失敗原因至日誌
-
-#### Scenario: 快速配準模式
-- WHEN 使用者選擇快速預覽模式
-- THEN 系統應使用降低解析度配準
-- AND 降低迭代次數至 50（標準為 200）
-- AND 配準時間應 <30 秒
-- AND 標記結果為「預覽品質」
-
-### Requirement: 病灶配對追蹤
-系統 MUST 正確配對前後檢查中的相同病灶。
-
-#### Scenario: 基於距離的配對
-- WHEN 在配準後的影像中比對病灶
-- THEN 系統應計算病灶中心點的歐式距離
-- AND 距離 <10mm 的病灶視為候選配對
-- AND 若多個候選，選擇距離最近的
-
-#### Scenario: 基於體積的配對驗證
-- WHEN 初步配對完成
-- THEN 系統應驗證配對病灶的體積相似度
-- AND 體積比 (smaller/larger) 應 >0.5
-- AND 體積比 <0.5 應視為不同病灶
-
-#### Scenario: 配對信心度
-- WHEN 完成病灶配對
-- THEN 系統應計算配對信心度分數
-- AND 信心度基於：距離（50%）+ 體積相似度（30%）+ 形狀相似度（20%）
-- AND 信心度 >0.8 為「高信心」
-- AND 信心度 0.6-0.8 為「中等信心」
-- AND 信心度 <0.6 應標記為「不確定配對」
-
-#### Scenario: 無法配對的病灶
-- WHEN baseline 中的病灶在 followup 中找不到匹配
-- THEN 系統應標記為「可能消失」
-- AND 檢查是否在配準範圍外
-- AND 檢查是否因體積過小被過濾
-
-### Requirement: 新增病灶檢測
-系統 MUST 檢測在追蹤檢查中新出現的病灶。
-
-#### Scenario: 標準新增病灶
-- WHEN followup 檢查中有病灶
-- AND 該病灶在 baseline 中不存在（無匹配）
-- AND 病灶體積 ≥3mm³
-- THEN 系統應標記為「新增病灶」
-- AND 記錄病灶位置與體積
-
-#### Scenario: 小體積病灶過濾
-- WHEN 檢測到體積 <3mm³ 的未匹配病灶
-- THEN 系統應標記為「小體積，可能為偽陽性」
-- AND 不計入新增病灶統計
-- AND 但保留於詳細報告中供審查
-
-#### Scenario: 邊緣病灶處理
-- WHEN 病灶位於影像邊緣（距離邊界 <5mm）
-- AND 無法確定是否在 baseline 範圍內
-- THEN 系統應標記為「邊緣病灶，不確定」
-- AND 建議人工審查
-
-#### Scenario: 掃描範圍差異
-- WHEN baseline 與 followup 的掃描範圍不同
-- THEN 系統應標示掃描範圍差異區域
-- AND 該區域的新增病灶標記為「範圍外」
-- AND 不計入真正的新增病灶
-
-### Requirement: 消失病灶檢測
-系統 SHALL 檢測在追蹤檢查中消失的病灶。
-
-#### Scenario: 標準消失病灶
-- WHEN baseline 檢查中有病灶
-- AND 該病灶在 followup 中不存在（無匹配）
-- AND 配準品質良好（MI >0.8）
-- THEN 系統應標記為「消失病灶」
-- AND 記錄原病灶位置與體積
-
-#### Scenario: 配準品質不佳時
-- WHEN 配準品質不佳（MI <0.7）
-- AND 檢測到消失病灶
-- THEN 系統應標記為「疑似消失，配準品質不佳」
-- AND 建議重新配準或人工審查
-
-#### Scenario: 體積縮小至閾值以下
-- WHEN baseline 病灶體積 >3mm³
-- AND followup 對應位置體積 <3mm³
-- THEN 系統應標記為「顯著縮小」而非「消失」
-- AND 記錄殘餘體積
-
-### Requirement: 體積變化計算
-系統 MUST 準確計算病灶的體積變化。
-
-#### Scenario: 絕對體積變化
-- WHEN 計算配對病灶的體積變化
-- THEN 系統應計算：Volume_change = Followup_vol - Baseline_vol
-- AND 以 cm³ 為單位
-- AND 精度至小數點後 2 位
-
-#### Scenario: 相對體積變化
-- WHEN 計算相對變化
-- THEN 系統應計算：Percent_change = (Volume_change / Baseline_vol) × 100%
-- AND 精度至小數點後 1 位（如 +15.3%）
-- AND 正值表示增大，負值表示縮小
-
-#### Scenario: 顯著性判斷
-- WHEN 評估體積變化的顯著性
-- THEN 系統應使用以下閾值：
-  - 變化 <10%：標記為「穩定」
-  - 變化 10-30%：標記為「輕度變化」
-  - 變化 30-50%：標記為「中度變化」
-  - 變化 >50%：標記為「顯著變化」
-
-#### Scenario: 測量誤差考量
-- WHEN 體積變化 <5%
-- THEN 系統應註明「接近測量誤差範圍」
-- AND 建議謹慎解讀
-
-#### Scenario: 總體積統計
-- WHEN 計算所有病灶的總體積變化
-- THEN 系統應分別計算：
-  - 穩定病灶總體積變化
-  - 新增病灶總體積
-  - 消失病灶總體積
-  - 整體總變化
-
-### Requirement: 病灶狀態分類
-系統 SHALL 為每個追蹤的病灶分配狀態標籤。
-
-#### Scenario: 穩定病灶
-- WHEN 病灶體積變化 <10%
-- AND 配對信心度 >0.7
-- THEN 系統應標記為 "stable"
-- AND 使用綠色標示
-
-#### Scenario: 增大病灶
-- WHEN 病灶體積增加 ≥10%
-- THEN 系統應標記為 "enlarged"
-- AND 使用黃色標示
-- AND 記錄增大百分比
-
-#### Scenario: 縮小病灶
-- WHEN 病灶體積減少 ≥10%
-- THEN 系統應標記為 "reduced"
-- AND 使用藍色標示
-- AND 記錄縮小百分比
-
-#### Scenario: 新增病灶
-- WHEN 病灶在 baseline 中不存在
-- THEN 系統應標記為 "new"
-- AND 使用紅色標示
-
-#### Scenario: 消失病灶
-- WHEN 病灶在 followup 中不存在
-- THEN 系統應標記為 "disappeared"
-- AND 使用灰色標示
-
-### Requirement: 視覺化輸出
-系統 MUST 提供多種視覺化方式展示比較結果。
-
-#### Scenario: 並排影像顯示
-- WHEN 產生視覺化輸出
+#### Scenario: 重跑穩定性（重疊病灶 UID）
+- WHEN baseline 病灶成功配對到 followup 病灶
+- THEN 系統 SHOULD 優先保留 baseline JSON 內既有的 `followup_dicom_sop_instance_uid`
 - THEN 系統應提供並排影像檢視
 - AND 左側為 baseline，右側為 followup
 - AND 影像應已配準對齊

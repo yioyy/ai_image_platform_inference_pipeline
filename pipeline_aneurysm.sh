@@ -5,13 +5,30 @@
 # History:
 # 2021/09/23 3rd
 # 初始化 conda 指令
-source /home/david/miniconda3/etc/profile.d/conda.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 載入環境設定（test/official 只要換這份檔案即可）
+# - 預設讀：<repo>/config/radax.env
+# - 或設定 RADX_ENV_FILE 指向 radax-test.env / radax-official.env
+ENV_FILE="${RADX_ENV_FILE:-$SCRIPT_DIR/config/radax.env}"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+  set +a
+fi
+
+CONDA_SH="${RADX_CONDA_SH:-/home/david/miniconda3/etc/profile.d/conda.sh}"
+# shellcheck source=/dev/null
+source "$CONDA_SH"
 
 # 啟動環境
-conda activate tf_2_14
+conda activate "${RADX_CONDA_ENV:-tf_2_14}"
 
 # 執行你的 python 程式，並傳入參數
-python /home/david/pipeline/chuan/code/pipeline_aneurysm_tensorflow.py --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4"
+PY_BIN="${RADX_PYTHON_BIN:-python}"
+PIPELINE_PY="${RADX_PIPELINE_ANEURYSM_PY:-$SCRIPT_DIR/pipeline_aneurysm_tensorflow.py}"
+$PY_BIN "$PIPELINE_PY" --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4"
 
 # 停用環境
-conda deactivate 
+conda deactivate
