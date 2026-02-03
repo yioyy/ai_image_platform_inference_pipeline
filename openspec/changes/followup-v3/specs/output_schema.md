@@ -100,13 +100,13 @@
   "followup_study_instance_uid": "string",
   "followup_series_instance_uid": "string",
   "sorted": [
-    {"current_slice": 1, "prior_slice": 2},
-    {"current_slice": 2, "prior_slice": 3}
+    {"current_slice": 1, "follow_slice": 2},
+    {"current_slice": 2, "follow_slice": 3}
   ],
   "reverse-sorted": [
-    {"prior_slice": 1, "current_slice": 1},
-    {"prior_slice": 2, "current_slice": 1},
-    {"prior_slice": 3, "current_slice": 2}
+    {"follow_slice": 1, "current_slice": 1},
+    {"follow_slice": 2, "current_slice": 1},
+    {"follow_slice": 3, "current_slice": 2}
   ]
 }
 ```
@@ -115,9 +115,9 @@
 - `sorted_slice` 為 list，代表多個 model 底下各一筆（每筆為一組 current/prior 對應）。
 - `model_type`：主體模型類別，對應 `study.model[].model_type`
 - `current_*` 與 `followup_*` 以 UID 區分每一個 pair。
-- `sorted`：以 current_date 滾輪為主時的對照表（`current_slice -> prior_slice`）
-- `reverse-sorted`：以 prior_date 滾輪為主時的對照表（`prior_slice -> current_slice`）
-- `current_slice` / `prior_slice` 從 1 開始，且為嚴格一對一對照
+- `sorted`：以 current_date 滾輪為主時的對照表（`current_slice -> follow_slice`）
+- `reverse-sorted`：以 prior_date 滾輪為主時的對照表（`follow_slice -> current_slice`）
+- `current_slice` / `follow_slice` 從 1 開始，且為嚴格一對一對照
 - 對照表不可出現空值，需依規則補齊缺值（首段/尾段/中段）：
   - 若最前段為空，補第一個可用對應值（預設補 1）
   - 若最後段為空，補最後一個可用對應值
@@ -240,13 +240,13 @@
       "followup_study_instance_uid": "1.2.840...",
       "followup_series_instance_uid": "1.2.840...",
       "sorted": [
-        {"current_slice": 1, "prior_slice": 1},
-        {"current_slice": 2, "prior_slice": 2}
+        {"current_slice": 1, "follow_slice": 1},
+        {"current_slice": 2, "follow_slice": 2}
       ],
       "reverse-sorted": [
-        {"prior_slice": 1, "current_slice": 1},
-        {"prior_slice": 2, "current_slice": 2},
-        {"prior_slice": 3, "current_slice": 2}
+        {"follow_slice": 1, "current_slice": 1},
+        {"follow_slice": 2, "current_slice": 2},
+        {"follow_slice": 3, "current_slice": 2}
       ]
     },
     {
@@ -256,12 +256,12 @@
       "followup_study_instance_uid": "1.2.840...",
       "followup_series_instance_uid": "1.2.840...",
       "sorted": [
-        {"current_slice": 1, "prior_slice": 1},
-        {"current_slice": 2, "prior_slice": 2}
+        {"current_slice": 1, "follow_slice": 1},
+        {"current_slice": 2, "follow_slice": 2}
       ],
       "reverse-sorted": [
-        {"prior_slice": 1, "current_slice": 1},
-        {"prior_slice": 2, "current_slice": 2}
+        {"follow_slice": 1, "current_slice": 1},
+        {"follow_slice": 2, "current_slice": 2}
       ]
     }
   ]

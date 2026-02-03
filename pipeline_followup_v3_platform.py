@@ -1151,7 +1151,7 @@ def _build_sorted_mapping_one_based(
     ]
     current_choice_filled = _fill_empty_choices(current_choice)
     sorted_list = [
-        {"current_slice": idx + 1, "prior_slice": prior_idx + 1}
+        {"current_slice": idx + 1, "follow_slice": prior_idx + 1}
         for idx, prior_idx in enumerate(current_choice_filled)
     ]
 
@@ -1167,7 +1167,7 @@ def _build_sorted_mapping_one_based(
     ]
     prior_choice_filled = _fill_empty_choices(prior_choice)
     reverse_sorted_list = [
-        {"prior_slice": idx + 1, "current_slice": current_idx + 1}
+        {"follow_slice": idx + 1, "current_slice": current_idx + 1}
         for idx, current_idx in enumerate(prior_choice_filled)
     ]
 

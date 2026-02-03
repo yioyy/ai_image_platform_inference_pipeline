@@ -222,7 +222,7 @@ def pipeline_aneurysm(ID,
 
             # 定義要傳入的參數，建立指令
             cmd = [
-                   "python", "/data/4TB1/pipeline/chuan/code/gpu_aneurysm.py",
+                   "python", os.path.join(path_code, "gpu_aneurysm.py"),
                    "--path_code", path_code,
                    "--path_process", path_processID,
                    "--path_brain_model", path_brain_model,
@@ -261,7 +261,10 @@ def pipeline_aneurysm(ID,
 
             #這邊還要做resample到original space
             SynthSEG_array = resampleSynthSEG2original(path_nii_n, 'MRA_BRAIN', 'synthseg33') 
-            shutil.copy(os.path.join(path_nii_n, 'NEW_MRA_BRAIN_synthseg33.nii.gz'), os.path.join(path_process, 'SynthSEG.nii.gz'))
+            shutil.copy(
+                os.path.join(path_nii_n, "NEW_MRA_BRAIN_synthseg33.nii.gz"),
+                os.path.join(path_nnunet, "SynthSEG.nii.gz"),
+            )
 
             shutil.copy(os.path.join(path_nnunet, 'Pred.nii.gz'), os.path.join(path_nii_n, 'Pred.nii.gz'))
             shutil.copy(os.path.join(path_processID, 'Vessel.nii.gz'), os.path.join(path_nii_n, 'Vessel.nii.gz'))
@@ -452,6 +455,7 @@ def pipeline_aneurysm(ID,
             followup_out_root = pathlib.Path(
                 os.getenv("RADX_FOLLOWUP_ROOT", path_process)
             )
+            temp_json_paths = []
             # 若有提供 input_json（可能是檔案路徑或 JSON 內容）
             if input_json:
                 # 若是檔案路徑，直接使用
@@ -459,16 +463,23 @@ def pipeline_aneurysm(ID,
                     input_json_path = input_json
                 else:
                     # 不是檔案路徑時，直接處理 JSON 內容
-                    os.makedirs(path_processModel, exist_ok=True)
-                    with tempfile.NamedTemporaryFile(
-                        mode="w",
-                        suffix=".json",
-                        delete=False,
-                        dir=path_processModel,
-                        encoding="utf-8",
-                    ) as temp_fp:
-                        temp_fp.write(input_json)
-                        input_json_path = temp_fp.name
+                    try:
+                        json.loads(input_json)
+                    except json.JSONDecodeError:
+                        logging.warning("Skip followup: input_json is not valid JSON content.")
+                        input_json_path = ""
+                    else:
+                        os.makedirs(path_processModel, exist_ok=True)
+                        with tempfile.NamedTemporaryFile(
+                            mode="w",
+                            suffix=".json",
+                            delete=False,
+                            dir=path_processModel,
+                            encoding="utf-8",
+                        ) as temp_fp:
+                            temp_fp.write(input_json)
+                            input_json_path = temp_fp.name
+                            temp_json_paths.append(temp_fp.name)
             else:
                 # 未提供 input_json 時，不執行 followup
                 input_json_path = ""
@@ -502,6 +513,13 @@ def pipeline_aneurysm(ID,
                 has_model = False
                 logging.info("Skip followup-v3 platform: input_json is empty.")
                 print("[FollowUp] Skip: input_json is empty.")
+
+            for temp_path in temp_json_paths:
+                try:
+                    os.remove(temp_path)
+                    logging.info("Remove temp json: %s", temp_path)
+                except OSError:
+                    logging.warning("Failed to remove temp json: %s", temp_path)
 
             #接下來，上傳json
             json_file_n = os.path.join(path_json_out_n, ID + '_platform_json.json')
