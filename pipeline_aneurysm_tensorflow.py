@@ -449,10 +449,10 @@ def pipeline_aneurysm(ID,
             logging.info(f"[Done All Pipeline!!! ] spend {time.time() - start:.0f} sec")
             logging.info('!!! ' + ID +  ' post_aneurysm finish.')
 
-            followup_case_root = pathlib.Path(
+            followup_process_root = pathlib.Path(
                 os.getenv("RADX_FOLLOWUP_CASE_ROOT", os.getenv("RADX_FOLLOWUP_ROOT", path_process))
             )
-            followup_out_root = pathlib.Path(
+            followup_output_root = pathlib.Path(
                 os.getenv("RADX_FOLLOWUP_ROOT", path_process)
             )
             temp_json_paths = []
@@ -489,12 +489,12 @@ def pipeline_aneurysm(ID,
                 try:
                     outputs, has_model = pipeline_followup_v3_platform(
                         input_json=pathlib.Path(input_json_path),
-                        path_process=followup_case_root,
+                        path_process=followup_process_root,
                         model="Aneurysm",
                         model_type=1,
                         case_id=ID,
                         platform_json_name="Pred_Aneurysm_platform_json.json",
-                        path_followup_root=followup_out_root,
+                        path_followup_root=followup_output_root,
                     )
                     logging.info(
                         "Followup-v3 outputs=%d has_model=%s", len(outputs), has_model
@@ -525,7 +525,7 @@ def pipeline_aneurysm(ID,
             json_file_n = os.path.join(path_json_out_n, ID + '_platform_json.json')
             # followup 有執行且存在該模型時，改上傳 followup 結果
             if has_model:
-                result_dir = followup_root / "Deep_FollowUp" / ID / "result"
+                result_dir = followup_output_root / "Deep_FollowUp" / ID / "result"
                 # 若結果資料夾存在，上傳其中所有 JSON
                 if result_dir.is_dir():
                     for json_path in result_dir.glob("*.json"):
