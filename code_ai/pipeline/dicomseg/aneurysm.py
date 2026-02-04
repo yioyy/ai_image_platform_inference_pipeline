@@ -19,6 +19,7 @@ import sys
 sys.path.append('/data/4TB1/pipeline/chuan/code') #在程式碼中動態加路徑（開發時方便）
 
 import argparse
+import logging
 import json
 import os
 import pathlib
@@ -508,6 +509,20 @@ def use_create_dicom_seg_file(path_nii:pathlib.Path,
         new_nifti_array = utils.get_array_to_dcm_axcodes(path_nii.joinpath('Pred.nii.gz'))
     else:
         new_nifti_array = utils.get_array_to_dcm_axcodes(path_nii.joinpath(f'{series_name}_pred.nii.gz'))
+    image_size = None
+    if hasattr(image, "GetSize"):
+        try:
+            image_size = image.GetSize()
+        except Exception:
+            image_size = None
+    log_msg = (
+        f"[dicomseg] series={series_name} "
+        f"nifti_path={path_nii} "
+        f"nifti_shape={getattr(new_nifti_array, 'shape', None)} "
+        f"dicom_size={image_size}"
+    )
+    logging.info(log_msg)
+    print(log_msg)
     pred_data_unique = np.unique(new_nifti_array)
     if len(pred_data_unique) < 1:
         return None
@@ -669,9 +684,46 @@ def execute_dicomseg_platform_json(_id:int,root_path:str,group_id:int):
 
     platform_json_path = output_series_folder.joinpath(
         path_root.joinpath("JSON", str(_id) + '_platform_json.json'))
-    with open(platform_json_path, 'w') as f:
-        f.write(aneurysm_platform_json.model_dump_json())
+    payload = aneurysm_platform_json.model_dump(mode="json")
+    _init_followup_fields(payload)
+    with open(platform_json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
     print("Processing complete!")
+
+
+def _init_followup_fields(payload: Dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        return
+    study = payload.get("study")
+    if isinstance(study, dict):
+        models = study.get("model")
+        if isinstance(models, list):
+            for model in models:
+                if isinstance(model, dict) and not isinstance(model.get("followup"), list):
+                    model["followup"] = []
+
+    mask = payload.get("mask")
+    if isinstance(mask, dict):
+        mask_models = mask.get("model")
+        if isinstance(mask_models, list):
+            for model in mask_models:
+                if not isinstance(model, dict):
+                    continue
+                series_list = model.get("series")
+                if not isinstance(series_list, list):
+                    continue
+                for series in series_list:
+                    if not isinstance(series, dict):
+                        continue
+                    instances = series.get("instances")
+                    if not isinstance(instances, list):
+                        continue
+                    for inst in instances:
+                        if isinstance(inst, dict) and not isinstance(inst.get("followup"), list):
+                            inst["followup"] = []
+
+    if not isinstance(payload.get("sorted_slice"), list):
+        payload["sorted_slice"] = []
 
 
 

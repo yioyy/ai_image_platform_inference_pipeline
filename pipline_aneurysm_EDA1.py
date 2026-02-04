@@ -35,7 +35,7 @@ IDs = sorted(os.listdir('/data/chuan/Deep_Aneurysm/data/EDA_TFDA_20251001/EDA_TF
 
 #這邊是用舊的for迴圈方式
 for idx, ID in enumerate(IDs):
-    if idx >= 319:
+    if idx >= 324:
         print([idx], ID, ' Start...')
         Inputs = os.path.join('/data/chuan/Deep_Aneurysm/data/EDA_TFDA_20251001/EDA_TFDA_20251001_nifti_split/EDA_TFDA_20251001_nifti1', ID + '_MRA_BRAIN.nii.gz')
         DicomDir = os.path.join('/data/chuan/Deep_Aneurysm/data/EDA_TFDA_20251001/EDA_TFDA_dicom_split/EDA_TFDA_dicom1', ID, 'MRA_BRAIN')

@@ -137,14 +137,12 @@ def pipeline_followup_v3_platform(
     print(f"[FollowUp] Resolved model_type_list={model_type_list}")
 
     outputs: List[Path] = []
-    newer = [item for item in studies if item.study_date_key > case_id_date_key]
+    targets: List[Tuple[StudyItem, List[StudyItem]]] = []
     older = [item for item in studies if item.study_date_key < case_id_date_key]
-    if not newer:
-        targets = [(input_study, older)]
-    else:
-        targets = [(input_study, older)]
-        for item in newer:
-            targets.append((item, [input_study]))
+    newer = [item for item in studies if item.study_date_key > case_id_date_key]
+    targets = [(input_study, older)]
+    for item in newer:
+        targets.append((item, [input_study]))
 
     for mt in model_type_list:
         model_name = _model_name_from_type(mt)
@@ -404,7 +402,7 @@ def _apply_mask_followup(
             current_sorted=current_sorted,
             prior_sorted=prior_sorted,
         )
-        followup_list.append(entry)
+        _append_unique_instance_followup(followup_list, entry)
 
     _append_regress_instances(
         current_series=current_series,
@@ -436,6 +434,8 @@ def _append_regress_instances(
     for prior_label, prior_inst in prior_instances.items():
         if prior_label in used_prior_labels:
             continue
+        if _has_regress_placeholder(instances, prior_item, prior_inst):
+            continue
         placeholder = _build_regress_placeholder(
             prior_inst=prior_inst,
             prior_item=prior_item,
@@ -445,6 +445,32 @@ def _append_regress_instances(
             prior_sorted=prior_sorted,
         )
         instances.append(placeholder)
+
+
+def _has_regress_placeholder(
+    instances: List[Dict[str, Any]],
+    prior_item: ModelStudyItem,
+    prior_inst: Dict[str, Any],
+) -> bool:
+    prior_mask_index = _safe_int(prior_inst.get("mask_index"))
+    prior_study_uid = prior_item.base.study_instance_uid
+    for inst in instances:
+        if not isinstance(inst, dict):
+            continue
+        followup_list = inst.get("followup")
+        if not isinstance(followup_list, list):
+            continue
+        for entry in followup_list:
+            if not isinstance(entry, dict):
+                continue
+            if _safe_str(entry.get("status")) != "regress":
+                continue
+            if _safe_str(entry.get("jump_study_instance_uid")) != prior_study_uid:
+                continue
+            if _safe_int(entry.get("mask_index")) != prior_mask_index:
+                continue
+            return True
+    return False
 
 
 def _build_followup_entry(
@@ -513,18 +539,30 @@ def _build_regress_placeholder(
         "is_main_seg": "",
     }
 
-    placeholder["dicom_sop_instance_uid"] = _map_sop_uid_by_projection(
-        source_uid=_safe_str(prior_inst.get("dicom_sop_instance_uid")),
-        source_sorted=prior_sorted,
-        target_sorted=current_sorted,
-        mat=mat,
-        direction="F2B",
-    )
-    placeholder["main_seg_slice"] = _map_slice_index(
+    mapped_slice = _map_slice_index(
         _safe_int(prior_inst.get("main_seg_slice")),
         mat=mat,
         direction="F2B",
     )
+    placeholder["main_seg_slice"] = mapped_slice
+    mapped_uid = _sop_uid_by_slice_index(current_sorted, mapped_slice)
+    if mapped_uid:
+        placeholder["dicom_sop_instance_uid"] = mapped_uid
+    else:
+        LOGGER.info(
+            "Regress fallback: no current slice uid (mapped_slice=%s), use projection mapping.",
+            mapped_slice,
+        )
+        print(
+            f"[FollowUp] Regress fallback: no current slice uid (mapped_slice={mapped_slice}), use projection mapping."
+        )
+        placeholder["dicom_sop_instance_uid"] = _map_sop_uid_by_projection(
+            source_uid=_safe_str(prior_inst.get("dicom_sop_instance_uid")),
+            source_sorted=prior_sorted,
+            target_sorted=current_sorted,
+            mat=mat,
+            direction="F2B",
+        )
 
     placeholder["followup"] = [
         {
@@ -578,19 +616,19 @@ def _append_study_followup(
         followup_list = []
         current_model["followup"] = followup_list
 
-    followup_list.append(
-        {
-            "current_series_instance_uid": current_series_uid,
-            "followup_study_date": prior_item.base.study_date_raw,
-            "followup_study_instance_uid": prior_item.base.study_instance_uid,
-            "followup_series_instance_uid": prior_series_uid,
-            "followup_series_type": prior_series_type,
-        }
-    )
+    entry = {
+        "current_series_instance_uid": current_series_uid,
+        "followup_study_date": prior_item.base.study_date_raw,
+        "followup_study_instance_uid": prior_item.base.study_instance_uid,
+        "followup_series_instance_uid": prior_series_uid,
+        "followup_series_type": prior_series_type,
+    }
+    _append_unique_study_followup(followup_list, entry)
 
 
 def _reset_followup(current_model: Dict[str, Any], current_mask_model: Dict[str, Any]) -> None:
-    current_model["followup"] = []
+    if not isinstance(current_model.get("followup"), list):
+        current_model["followup"] = []
     series = _get_first_series(current_mask_model)
     if not series:
         return
@@ -599,24 +637,100 @@ def _reset_followup(current_model: Dict[str, Any], current_mask_model: Dict[str,
         return
     for inst in instances:
         if isinstance(inst, dict):
-            inst["followup"] = []
+            if not isinstance(inst.get("followup"), list):
+                inst["followup"] = []
 
 
 def _ensure_sorted_slice_list(payload: Dict[str, Any], model_type: int) -> None:
     sorted_slice = payload.get("sorted_slice")
-    if isinstance(sorted_slice, list):
-        payload["sorted_slice"] = [s for s in sorted_slice if _safe_int(s.get("model_type")) != model_type]
-        return
-    payload["sorted_slice"] = []
+    if not isinstance(sorted_slice, list):
+        payload["sorted_slice"] = []
 
 
 def _replace_sorted_slice(payload: Dict[str, Any], model_type: int, entries: List[Dict[str, Any]]) -> None:
     existing = payload.get("sorted_slice")
-    if isinstance(existing, list):
-        kept = [s for s in existing if _safe_int(s.get("model_type")) != model_type]
-    else:
-        kept = []
-    payload["sorted_slice"] = kept + entries
+    if not isinstance(existing, list):
+        payload["sorted_slice"] = entries
+        return
+    payload["sorted_slice"] = _merge_sorted_slice(existing, entries)
+
+
+def _append_unique_study_followup(followup_list: List[Dict[str, Any]], entry: Dict[str, Any]) -> None:
+    if _has_study_followup(followup_list, entry):
+        return
+    followup_list.append(entry)
+
+
+def _has_study_followup(followup_list: List[Dict[str, Any]], entry: Dict[str, Any]) -> bool:
+    key = (
+        _safe_str(entry.get("current_series_instance_uid")),
+        _safe_str(entry.get("followup_study_instance_uid")),
+        _safe_str(entry.get("followup_series_instance_uid")),
+    )
+    for item in followup_list:
+        if not isinstance(item, dict):
+            continue
+        item_key = (
+            _safe_str(item.get("current_series_instance_uid")),
+            _safe_str(item.get("followup_study_instance_uid")),
+            _safe_str(item.get("followup_series_instance_uid")),
+        )
+        if item_key == key:
+            return True
+    return False
+
+
+def _append_unique_instance_followup(followup_list: List[Dict[str, Any]], entry: Dict[str, Any]) -> None:
+    if _has_instance_followup(followup_list, entry):
+        return
+    followup_list.append(entry)
+
+
+def _has_instance_followup(followup_list: List[Dict[str, Any]], entry: Dict[str, Any]) -> bool:
+    key = (
+        _safe_str(entry.get("status")),
+        _safe_str(entry.get("study_date")),
+        _safe_str(entry.get("jump_study_instance_uid")),
+        _safe_str(entry.get("jump_series_instance_uid")),
+        _safe_int(entry.get("mask_index")),
+    )
+    for item in followup_list:
+        if not isinstance(item, dict):
+            continue
+        item_key = (
+            _safe_str(item.get("status")),
+            _safe_str(item.get("study_date")),
+            _safe_str(item.get("jump_study_instance_uid")),
+            _safe_str(item.get("jump_series_instance_uid")),
+            _safe_int(item.get("mask_index")),
+        )
+        if item_key == key:
+            return True
+    return False
+
+
+def _merge_sorted_slice(existing: List[Dict[str, Any]], entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged = list(existing)
+    existing_keys = {_sorted_slice_key(item) for item in existing if isinstance(item, dict)}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        key = _sorted_slice_key(item)
+        if key in existing_keys:
+            continue
+        merged.append(item)
+        existing_keys.add(key)
+    return merged
+
+
+def _sorted_slice_key(item: Dict[str, Any]) -> tuple[str, str, str, str, int]:
+    return (
+        _safe_str(item.get("current_study_instance_uid")),
+        _safe_str(item.get("current_series_instance_uid")),
+        _safe_str(item.get("followup_study_instance_uid")),
+        _safe_str(item.get("followup_series_instance_uid")),
+        _safe_int(item.get("model_type")),
+    )
 
 
 def _build_studies(
@@ -1089,6 +1203,15 @@ def _get_sorted_slices(payload: Dict[str, Any]) -> List[SortedSliceItem]:
     return out
 
 
+def _sop_uid_by_slice_index(sorted_slices: List[SortedSliceItem], slice_index: int) -> str:
+    if slice_index <= 0:
+        return ""
+    idx = slice_index - 1
+    if idx >= len(sorted_slices):
+        return ""
+    return _safe_str(sorted_slices[idx].sop_instance_uid)
+
+
 def _map_sop_uid_by_projection(
     *,
     source_uid: str,
@@ -1151,7 +1274,7 @@ def _build_sorted_mapping_one_based(
     ]
     current_choice_filled = _fill_empty_choices(current_choice)
     sorted_list = [
-        {"current_slice": idx + 1, "follow_slice": prior_idx + 1}
+        {"current_slice": idx + 1, "followup_slice": prior_idx + 1}
         for idx, prior_idx in enumerate(current_choice_filled)
     ]
 
@@ -1167,7 +1290,7 @@ def _build_sorted_mapping_one_based(
     ]
     prior_choice_filled = _fill_empty_choices(prior_choice)
     reverse_sorted_list = [
-        {"follow_slice": idx + 1, "current_slice": current_idx + 1}
+        {"followup_slice": idx + 1, "current_slice": current_idx + 1}
         for idx, current_idx in enumerate(prior_choice_filled)
     ]
 

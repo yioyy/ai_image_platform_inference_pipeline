@@ -484,6 +484,7 @@ def pipeline_aneurysm(ID,
                 # 未提供 input_json 時，不執行 followup
                 input_json_path = ""
 
+            outputs = []
             if input_json_path:
                 start_followup = time.time()
                 try:
@@ -523,29 +524,16 @@ def pipeline_aneurysm(ID,
 
             #接下來，上傳json
             json_file_n = os.path.join(path_json_out_n, ID + '_platform_json.json')
-            # followup 有執行且存在該模型時，改上傳 followup 結果
-            if has_model:
-                result_dir = followup_output_root / "Deep_FollowUp" / ID / "result"
-                # 若結果資料夾存在，上傳其中所有 JSON
-                if result_dir.is_dir():
-                    for json_path in result_dir.glob("*.json"):
-                        try:
-                            resp = upload_json_aiteam(str(json_path))
-                            logging.info("Upload followup json: %s resp=%s", json_path, resp)
-                            print(f"[Upload] followup json={json_path} resp={resp}")
-                        except Exception as exc:
-                            logging.error("Upload followup json failed: %s", json_path, exc_info=True)
-                            print(f"[Upload] followup json failed: {json_path} err={exc}")
-                else:
-                    # 若結果資料夾不存在，退回上傳原版 JSON
-                    logging.warning("Followup result dir not found: %s", result_dir)
+            # followup 有執行且存在該模型時，上傳 followup 結果（含當前日期主體）
+            if has_model and outputs:
+                for json_path in outputs:
                     try:
-                        resp = upload_json_aiteam(json_file_n)
-                        logging.info("Upload original json: %s resp=%s", json_file_n, resp)
-                        print(f"[Upload] original json={json_file_n} resp={resp}")
+                        resp = upload_json_aiteam(str(json_path))
+                        logging.info("Upload followup json: %s resp=%s", json_path, resp)
+                        print(f"[Upload] followup json={json_path} resp={resp}")
                     except Exception as exc:
-                        logging.error("Upload original json failed: %s", json_file_n, exc_info=True)
-                        print(f"[Upload] original json failed: {json_file_n} err={exc}")
+                        logging.error("Upload followup json failed: %s", json_path, exc_info=True)
+                        print(f"[Upload] followup json failed: {json_path} err={exc}")
             else:
                 # followup 未執行或無模型時，上傳原版 JSON
                 try:
