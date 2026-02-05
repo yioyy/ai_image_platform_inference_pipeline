@@ -198,7 +198,7 @@ def _run_model_followup(
     _reset_followup(current_model, current_mask_model)
     _ensure_sorted_slice_list(current_payload, current.model_type)
 
-    current_series_uid, current_series_type = _get_series_info(current_payload)
+    current_series_uid, current_series_type = _get_series_info(current_payload, current.model_type)
 
     sorted_slice_entries: List[Dict[str, Any]] = []
     priors_sorted = sorted(priors, key=lambda item: item.base.study_date_key, reverse=True)
@@ -220,7 +220,7 @@ def _run_model_followup(
         if prior_mask_model is None:
             continue
 
-        prior_series_uid, prior_series_type = _get_series_info(prior_payload)
+        prior_series_uid, prior_series_type = _get_series_info(prior_payload, prior.model_type)
         _append_study_followup(
             current_model=current_model,
             current_series_uid=current_series_uid,
@@ -360,7 +360,15 @@ def _apply_mask_followup(
     prior_payload: Dict[str, Any],
     comp: Dict[str, Any],
 ) -> None:
-    current_series = _get_first_series(current_mask_model)
+    prior_mask_model = _find_mask_model(prior_payload, prior_item.model_type)
+    if prior_mask_model is None:
+        return
+    prior_instances_map: Dict[int, Dict[str, Any]] = {}
+
+    current_series_type = _pick_series_type(current_payload, prior_item.model_type)
+    current_series = _select_series_by_type(current_mask_model, current_series_type)
+    if current_series is None:
+        current_series = _get_first_series(current_mask_model)
     if current_series is None:
         return
 
@@ -368,18 +376,18 @@ def _apply_mask_followup(
     if not isinstance(current_instances, list):
         return
 
-    prior_mask_model = _find_mask_model(prior_payload, prior_item.model_type)
-    if prior_mask_model is None:
-        return
-    prior_instances_map = _collect_instances_by_index(prior_mask_model)
-    prior_series = _get_first_series(prior_mask_model)
+    current_series_uid = _safe_str(current_series.get("series_instance_uid")) if current_series else ""
+    current_sorted = _get_sorted_slices(current_payload, current_series_uid)
+
+    prior_series = _select_series_by_type(prior_mask_model, current_series_type)
+    if prior_series is None:
+        prior_series = _get_first_series(prior_mask_model)
     if isinstance(prior_series, dict):
         prior_series_uid = _safe_str(prior_series.get("series_instance_uid"))
     else:
-        prior_series_uid = _get_series_uid(prior_payload)
-
-    current_sorted = _get_sorted_slices(current_payload)
-    prior_sorted = _get_sorted_slices(prior_payload)
+        prior_series_uid = _get_series_uid_by_type(prior_payload, current_series_type)
+    prior_instances_map = _collect_instances_by_index_for_series(prior_mask_model, prior_series_uid)
+    prior_sorted = _get_sorted_slices(prior_payload, prior_series_uid)
 
     for inst in current_instances:
         if not isinstance(inst, dict):
@@ -592,12 +600,14 @@ def _build_sorted_slice_entry(
     sorted_mapping: List[Dict[str, Any]],
     reverse_sorted_mapping: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    current_series_uid, _ = _get_series_info(current_payload, model_type)
+    prior_series_uid, _ = _get_series_info(prior_payload, model_type)
     return {
         "model_type": model_type,
         "current_study_instance_uid": _safe_str(_get_study_uid(current_payload)),
-        "current_series_instance_uid": _safe_str(_get_series_uid(current_payload)),
+        "current_series_instance_uid": _safe_str(current_series_uid),
         "followup_study_instance_uid": _safe_str(_get_study_uid(prior_payload)),
-        "followup_series_instance_uid": _safe_str(_get_series_uid(prior_payload)),
+        "followup_series_instance_uid": _safe_str(prior_series_uid),
         "sorted": sorted_mapping,
         "reverse-sorted": reverse_sorted_mapping,
     }
@@ -629,16 +639,19 @@ def _append_study_followup(
 def _reset_followup(current_model: Dict[str, Any], current_mask_model: Dict[str, Any]) -> None:
     if not isinstance(current_model.get("followup"), list):
         current_model["followup"] = []
-    series = _get_first_series(current_mask_model)
-    if not series:
+    series_list = current_mask_model.get("series") or []
+    if not isinstance(series_list, list):
         return
-    instances = series.get("instances")
-    if not isinstance(instances, list):
-        return
-    for inst in instances:
-        if isinstance(inst, dict):
-            if not isinstance(inst.get("followup"), list):
-                inst["followup"] = []
+    for series in series_list:
+        if not isinstance(series, dict):
+            continue
+        instances = series.get("instances")
+        if not isinstance(instances, list):
+            continue
+        for inst in instances:
+            if isinstance(inst, dict):
+                if not isinstance(inst.get("followup"), list):
+                    inst["followup"] = []
 
 
 def _ensure_sorted_slice_list(payload: Dict[str, Any], model_type: int) -> None:
@@ -1141,19 +1154,80 @@ def _collect_instances_by_index(mask_model: Dict[str, Any]) -> Dict[int, Dict[st
     return mapping
 
 
-def _get_series_info(payload: Dict[str, Any]) -> Tuple[str, int]:
-    series_uid = _get_series_uid(payload)
-    series_type = 0
-    study = payload.get("study") or {}
-    series_list = study.get("series") or []
-    if isinstance(series_list, list) and series_list:
-        series = series_list[0]
-        if isinstance(series, dict):
-            series_type = _safe_int(series.get("series_type")) or 0
+def _collect_instances_by_index_for_series(
+    mask_model: Dict[str, Any], series_uid: str
+) -> Dict[int, Dict[str, Any]]:
+    if not series_uid:
+        return _collect_instances_by_index(mask_model)
+    mapping: Dict[int, Dict[str, Any]] = {}
+    series_list = mask_model.get("series") or []
+    for series in series_list:
+        if not isinstance(series, dict):
+            continue
+        if _safe_str(series.get("series_instance_uid")) != series_uid:
+            continue
+        instances = series.get("instances") or []
+        if not isinstance(instances, list):
+            continue
+        for inst in instances:
+            if not isinstance(inst, dict):
+                continue
+            idx = _safe_int(inst.get("mask_index"))
+            if idx:
+                mapping[idx] = inst
+    return mapping
+
+
+def _get_series_info(payload: Dict[str, Any], model_type: int) -> Tuple[str, int]:
+    series_type = _pick_series_type(payload, model_type)
+    series_uid = _get_series_uid_by_type(payload, series_type)
+    if not series_uid:
+        series_uid = _get_first_series_uid(payload)
     return series_uid, series_type
 
 
-def _get_series_uid(payload: Dict[str, Any]) -> str:
+def _get_model_series_types(payload: Dict[str, Any], model_type: int) -> List[int]:
+    study = payload.get("study") or {}
+    model_list = study.get("model") or []
+    out: List[int] = []
+    for model in model_list:
+        if not isinstance(model, dict):
+            continue
+        mt = _safe_int(model.get("model_type"))
+        if mt != model_type:
+            continue
+        series_type = model.get("series_type")
+        if isinstance(series_type, list):
+            for item in series_type:
+                val = _safe_int(item)
+                if val and val not in out:
+                    out.append(val)
+        else:
+            val = _safe_int(series_type)
+            if val and val not in out:
+                out.append(val)
+    return out
+
+
+def _pick_series_type(payload: Dict[str, Any], model_type: int) -> int:
+    types = _get_model_series_types(payload, model_type)
+    return types[0] if types else 0
+
+
+def _get_series_uid_by_type(payload: Dict[str, Any], series_type: int) -> str:
+    if series_type <= 0:
+        return ""
+    study = payload.get("study") or {}
+    series_list = study.get("series") or []
+    for series in series_list:
+        if not isinstance(series, dict):
+            continue
+        if _safe_int(series.get("series_type")) == series_type:
+            return str(series.get("series_instance_uid", "") or "")
+    return ""
+
+
+def _get_first_series_uid(payload: Dict[str, Any]) -> str:
     study = payload.get("study") or {}
     series_list = study.get("series") or []
     if isinstance(series_list, list) and series_list:
@@ -1161,6 +1235,20 @@ def _get_series_uid(payload: Dict[str, Any]) -> str:
         if isinstance(first, dict):
             return str(first.get("series_instance_uid", "") or "")
     return ""
+
+
+def _select_series_by_type(mask_model: Dict[str, Any], series_type: int) -> Optional[Dict[str, Any]]:
+    if series_type <= 0:
+        return None
+    series_list = mask_model.get("series") or []
+    if not isinstance(series_list, list):
+        return None
+    for series in series_list:
+        if not isinstance(series, dict):
+            continue
+        if _safe_int(series.get("series_type")) == series_type:
+            return series
+    return None
 
 
 def _get_study_uid(payload: Dict[str, Any]) -> str:
@@ -1175,17 +1263,28 @@ def _model_name_from_type(model_type: int) -> str:
     return name
 
 
-def _get_sorted_slices(payload: Dict[str, Any]) -> List[SortedSliceItem]:
+def _get_sorted_slices(payload: Dict[str, Any], series_uid: str) -> List[SortedSliceItem]:
     sorted_block = payload.get("sorted")
     if not isinstance(sorted_block, dict):
         return []
     series = sorted_block.get("series")
     if not isinstance(series, list) or not series:
         return []
-    first = series[0]
-    if not isinstance(first, dict):
-        return []
-    instance_list = first.get("instance")
+    chosen = None
+    if series_uid:
+        for item in series:
+            if not isinstance(item, dict):
+                continue
+            if _safe_str(item.get("series_instance_uid")) == series_uid:
+                chosen = item
+                break
+    if chosen is None:
+        first = series[0]
+        if not isinstance(first, dict):
+            return []
+        chosen = first
+
+    instance_list = chosen.get("instance")
     if not isinstance(instance_list, list):
         return []
     out: List[SortedSliceItem] = []
