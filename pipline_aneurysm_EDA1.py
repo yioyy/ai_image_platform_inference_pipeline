@@ -40,13 +40,16 @@ for idx, ID in enumerate(IDs):
         Inputs = os.path.join('/data/chuan/Deep_Aneurysm/data/EDA_TFDA_20251001/EDA_TFDA_20251001_nifti_split/EDA_TFDA_20251001_nifti1', ID + '_MRA_BRAIN.nii.gz')
         DicomDir = os.path.join('/data/chuan/Deep_Aneurysm/data/EDA_TFDA_20251001/EDA_TFDA_dicom_split/EDA_TFDA_dicom1', ID, 'MRA_BRAIN')
         Output_folder = os.path.join('/data/chuan/Deep_Aneurysm/Result/EDA_TFDA_20251001/example_output/EDA1', ID)
+        gpu_n = '1'
         cmd = [
                "python", "pipeline_aneurysm_tensorflow.py",
                "--ID", ID,
                "--Inputs", Inputs,
                "--DicomDir", DicomDir,
                "--Output_folder", Output_folder,
-               "--gpu_n", '1',
+               "--gpu_n", gpu_n,
               ]
 
-        subprocess.run(cmd)
+        gpu_env = os.environ.copy()
+        gpu_env["CUDA_VISIBLE_DEVICES"] = gpu_n
+        subprocess.run(cmd, env=gpu_env)

@@ -14,6 +14,24 @@ warnings.filterwarnings("ignore") # 忽略警告输出
 
 
 import glob, re, os, sys, time, itertools
+
+def _maybe_set_cuda_visible_from_argv() -> None:
+    if os.environ.get("CUDA_VISIBLE_DEVICES"):
+        return
+    gpu_n = None
+    if "--gpu_n" in sys.argv:
+        idx = sys.argv.index("--gpu_n")
+        if idx + 1 < len(sys.argv):
+            gpu_n = sys.argv[idx + 1]
+    else:
+        for arg in sys.argv:
+            if arg.startswith("--gpu_n="):
+                gpu_n = arg.split("=", 1)[1]
+                break
+    if gpu_n is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_n).strip()
+
+_maybe_set_cuda_visible_from_argv()
 os.environ['TF_ENABLE_AUTO_MIXED_PRECISION'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import shutil
@@ -567,9 +585,18 @@ def model_predict_aneurysm(path_code, path_process, path_brain_model, path_vesse
             #print(tf.__version__)
             gpus = tf.config.experimental.list_physical_devices(device_type='GPU')
             cpus = tf.config.experimental.list_physical_devices(device_type='CPU')
-            tf.config.experimental.set_visible_devices(devices=gpus[gpu_n], device_type='GPU')
+            if not gpus:
+                raise RuntimeError("No GPU devices found.")
+            # 如果已設定 CUDA_VISIBLE_DEVICES，gpus 只會看到那一顆，需用 index 0
+            if os.environ.get("CUDA_VISIBLE_DEVICES"):
+                visible_idx = 0
+            else:
+                visible_idx = gpu_n
+            if visible_idx >= len(gpus):
+                visible_idx = 0
+            tf.config.experimental.set_visible_devices(devices=gpus[visible_idx], device_type='GPU')
             #print(gpus, cpus)
-            tf.config.experimental.set_memory_growth(gpus[0],True)
+            tf.config.experimental.set_memory_growth(gpus[visible_idx], True)
 
             #%%
             #底下正式開始predict任務

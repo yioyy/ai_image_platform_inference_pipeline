@@ -25,8 +25,26 @@ import cv2
 import matplotlib.pyplot as plt
 import matplotlib
 import argparse
-import tensorflow as tf
+
+def _maybe_set_cuda_visible_from_argv() -> None:
+    if os.environ.get("CUDA_VISIBLE_DEVICES"):
+        return
+    gpu_n = None
+    if "--gpu_n" in sys.argv:
+        idx = sys.argv.index("--gpu_n")
+        if idx + 1 < len(sys.argv):
+            gpu_n = sys.argv[idx + 1]
+    else:
+        for arg in sys.argv:
+            if arg.startswith("--gpu_n="):
+                gpu_n = arg.split("=", 1)[1]
+                break
+    if gpu_n is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_n).strip()
+
+_maybe_set_cuda_visible_from_argv()
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import tensorflow as tf
 import skimage
 import skimage.feature
 import skimage.measure
@@ -180,9 +198,18 @@ def pipeline_aneurysm(ID,
             # print(keras.__version__)
             # print(tf.__version__)
             gpus = tf.config.experimental.list_physical_devices(device_type='GPU')
-            tf.config.experimental.set_visible_devices(devices=gpus[gpu_n], device_type='GPU')
+            if not gpus:
+                raise RuntimeError("No GPU devices found.")
+            # 如果已設定 CUDA_VISIBLE_DEVICES，gpus 只會看到那一顆，需用 index 0
+            if os.environ.get("CUDA_VISIBLE_DEVICES"):
+                visible_idx = 0
+            else:
+                visible_idx = gpu_n
+            if visible_idx >= len(gpus):
+                visible_idx = 0
+            tf.config.experimental.set_visible_devices(devices=gpus[visible_idx], device_type='GPU')
             # print(gpus, cpus)
-            tf.config.experimental.set_memory_growth(gpus[gpu_n], True)
+            tf.config.experimental.set_memory_growth(gpus[visible_idx], True)
 
             #先判斷有無影像，複製過去
             #print('ADC_file:', ADC_file, ' copy:', os.path.join(path_nii, ID + '_ADC.nii.gz'))
@@ -236,7 +263,9 @@ def pipeline_aneurysm(ID,
             #result = subprocess.run(cmd, capture_output=True, text=True) 這會讓 subprocess.run() 自動幫你捕捉 stdout 和 stderr 的輸出，不然預設是印在 terminal 上，不會儲存。
             # 執行 subprocess
             start = time.time()
-            subprocess.run(cmd)
+            gpu_env = os.environ.copy()
+            gpu_env["CUDA_VISIBLE_DEVICES"] = str(gpu_n)
+            subprocess.run(cmd, env=gpu_env)
             print(f"[Done stage 1: Aneurysm AI Inference... ] spend {time.time() - start:.0f} sec")
             logging.info(f"[Done stage 1: Aneurysm AI Inference... ] spend {time.time() - start:.0f} sec")
 
