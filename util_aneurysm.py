@@ -177,8 +177,9 @@ def create_MIP_pred(path_dcm, path_nii, path_png, gpu_num, create_label_mip=Fals
     #gpu_num = 0
     #tf.config.experimental.set_visible_devices(devices=gpu_available[gpu_num], device_type='GPU')
 
-    #for gpu in gpu_available:
-    #    tf.config.experimental.set_memory_growth(gpu, True)
+    # 若已設定 CUDA_VISIBLE_DEVICES，torch 只能看到第 0 顆
+    if os.environ.get("CUDA_VISIBLE_DEVICES"):
+        gpu_num = 0
     
     def img_to_MIPdicom(dcm, img, tag, series, SE, angle, count, fixed_slice_thickness=None):
         y_i, x_i = img.shape

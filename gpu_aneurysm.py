@@ -92,18 +92,36 @@ def custom_normalize_1(volume, mask=None, new_min=0., new_max=0.5, min_percentil
     :param use_positive_only: (optional) whether to use only positive values when estimating the min and max percentile
     :return: rescaled volume
     """
+    # 檢查輸入維度
+    if volume.ndim != 3:
+        raise ValueError(f"Volume must be 3D, got {volume.ndim}D")
+    
+    if mask is not None and mask.ndim != 3:
+        raise ValueError(f"Mask must be 3D, got {mask.ndim}D")
+    
+    if mask is not None and volume.shape != mask.shape:
+        raise ValueError(f"Volume shape {volume.shape} and mask shape {mask.shape} must match")
+    
     # select intensities
     new_volume = volume.copy()
     new_volume = new_volume.astype("float32")
-    if (mask is not None)and(use_positive_only):
-        intensities = new_volume[mask].ravel()
-        intensities = intensities[intensities > 0]
+    
+    if mask is not None and use_positive_only:
+        # 使用布林索引，確保結果是1維
+        mask_positive = (mask > 0) & (new_volume > 0)
+        intensities = new_volume[mask_positive].ravel()
     elif mask is not None:
-        intensities = new_volume[mask].ravel()
+        # 使用布林索引，確保結果是1維
+        intensities = new_volume[mask > 0].ravel()
     elif use_positive_only:
         intensities = new_volume[new_volume > 0].ravel()
     else:
         intensities = new_volume.ravel()
+
+    # 檢查是否有有效的強度值
+    if len(intensities) == 0:
+        print("Warning: No valid intensities found, returning zeros")
+        return np.zeros_like(new_volume)
 
     # define min and max intensities in original image for normalisation
     robust_min = np.min(intensities) if min_percentile == 0 else np.percentile(intensities, min_percentile)
@@ -121,35 +139,6 @@ def custom_normalize_1(volume, mask=None, new_min=0., new_max=0.5, min_percentil
 #     # clip normalized values [0:1]
 #     new_volume = np.clip(new_volume, 0, 1)
     return new_volume
-
-def get_struc(diameter, spacing):  # diameter in mm
-    structure_size = np.round(diameter / np.array(spacing)).astype('int32')
-    structure_size = np.maximum([1,1,1], structure_size)
-    structure = resize_volume(ball(diameter*5), target_size=structure_size, dtype='bool')
-    center_point = np.array(structure.shape) // 2
-    structure[center_point] = True
-    return structure
-
-# resampling
-def resize_volume(arr, spacing=None, target_spacing=None, target_size=None, order=3, dtype='float32'):
-    if ("int8" in dtype)or(dtype == "bool"):
-        order = 0
-
-    if (spacing is not None)and(target_spacing is not None):
-        # from spacing to target_spacing
-        scale = np.array(spacing) / np.array(target_spacing)
-        out_vol = ndi.zoom(arr, zoom=scale, order=order,
-                           mode='grid-mirror', prefilter=True, grid_mode=False)
-    elif target_size is not None:
-        # to target_size
-        scale = np.array(target_size) / np.array(arr.shape)
-        out_vol = ndi.zoom(arr, zoom=scale, output=np.zeros(target_size, dtype=dtype), order=order,
-                           mode='grid-mirror', prefilter=True, grid_mode=False)
-
-    if 'int' in dtype:  # clip values
-        dtype_info = np.iinfo(dtype)
-        out_vol = np.clip(out_vol, dtype_info.min, dtype_info.max)
-    return out_vol.astype(dtype)
 
 #@title Load image
 def load_volume(path_volume, im_only=False, squeeze=True, dtype=None, LPS_coor=True):

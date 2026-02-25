@@ -495,12 +495,14 @@ def _build_followup_entry(
     entry: Dict[str, Any] = {}
     entry["status"] = status
     entry["study_date"] = prior_item.base.study_date_raw
-    entry["mask_index"] = _safe_int(prior_inst.get("mask_index")) if prior_inst else 0
+    # status=new 時，沒有對應的 prior mask，mask_index 應保持空字串（避免誤填 0）
+    entry["mask_index"] = _safe_int(prior_inst.get("mask_index")) if prior_inst else ""
     entry["old_diameter"] = _safe_str(prior_inst.get("diameter")) if prior_inst else ""
     entry["old_volume"] = _safe_str(prior_inst.get("volume")) if prior_inst else ""
     entry["old_prob_max"] = _safe_str(prior_inst.get("prob_max")) if prior_inst else ""
     entry["jump_study_instance_uid"] = prior_item.base.study_instance_uid
-    entry["jump_series_instance_uid"] = _safe_str(prior_series_uid) if prior_inst else ""
+    # 即使是 new，也需要能跳轉到 prior 的 series（SOP 會用投影方式映射）
+    entry["jump_series_instance_uid"] = _safe_str(prior_series_uid)
     entry["jump_sop_instance_uid"] = _safe_str(prior_inst.get("dicom_sop_instance_uid")) if prior_inst else ""
     entry["seg_series_instance_uid"] = _safe_str(prior_inst.get("seg_series_instance_uid")) if prior_inst else ""
     entry["seg_sop_instance_uid"] = _safe_str(prior_inst.get("seg_sop_instance_uid")) if prior_inst else ""
