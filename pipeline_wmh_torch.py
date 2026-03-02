@@ -14,14 +14,18 @@ import logging
 import shutil
 import argparse
 import subprocess
+import json
+import pathlib
+import tempfile
 import tensorflow as tf  # type: ignore[import]
 
 import pynvml  # type: ignore[import]  # GPU memory info
 
 from pre_wmh import preprocess_wmh_images
 from post_wmh import postprocess_wmh_results
-from util_aneurysm import resampleSynthSEG2original
+from util_aneurysm import resampleSynthSEG2original, upload_json_aiteam
 from after_run_wmh import after_run_wmh
+from pipeline_followup_v3_platform import pipeline_followup_v3_platform
 
 warnings.filterwarnings("ignore")  # 忽略警告输出
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -53,7 +57,8 @@ def pipeline_wmh(ID,
                  path_processModel = '/mnt/e/pipeline/chuan/process/Deep_WMH/', 
                  path_json = '/mnt/e/pipeline/chuan/json/',
                  path_log = '/mnt/e/pipeline/chuan/log/', 
-                 gpu_n = 0
+                 gpu_n = 0,
+                 input_json: str = "",
                  ):
 
     #當使用gpu有錯時才確認
@@ -229,6 +234,164 @@ def pipeline_wmh(ID,
                 logging.error('!!! ' + ID + ' after_run failed.')
                 return logging.error('!!! ' + ID + ' after_run failed.')
 
+            # ============ followup-v3 platform（可選）============
+            followup_process_root = pathlib.Path(
+                os.getenv(
+                    "RADX_FOLLOWUP_CASE_ROOT",
+                    os.getenv("RADX_FOLLOWUP_ROOT", str(pathlib.Path(path_output).resolve().parent)),
+                )
+            )
+            followup_output_root = pathlib.Path(
+                os.getenv("RADX_FOLLOWUP_ROOT", str(followup_process_root))
+            )
+
+            # 先把本次 case 的必要檔名補到 followup case 目錄（避免 followup 找不到檔）
+            try:
+                case_dir = (
+                    followup_process_root
+                    if followup_process_root.name == ID
+                    else followup_process_root / ID
+                )
+                os.makedirs(case_dir, exist_ok=True)
+
+                src_pred = os.path.join(path_output, "Pred_WMH.nii.gz")
+                if os.path.isfile(src_pred):
+                    shutil.copy(src_pred, os.path.join(case_dir, "Pred_WMH.nii.gz"))
+
+                src_synthseg = os.path.join(path_nnunet, "Image_nii", "SynthSEG.nii.gz")
+                if os.path.isfile(src_synthseg):
+                    shutil.copy(src_synthseg, os.path.join(case_dir, "SynthSEG_WMH.nii.gz"))
+
+                json_file_n = os.path.join(path_nnunet, "JSON", ID + "_platform_json.json")
+                if os.path.isfile(json_file_n):
+                    shutil.copy(
+                        json_file_n,
+                        os.path.join(case_dir, "Pred_WMH_platform_json.json"),
+                    )
+            except Exception as exc:
+                logging.warning("Prepare followup case files failed: %s", exc)
+
+            temp_json_paths = []
+            # 若有提供 input_json（可能是檔案路徑或 JSON 內容）
+            input_json = str(input_json).strip().replace("\r", "").replace("\n", "")
+            if input_json:
+                # 若是檔案路徑，直接使用
+                if os.path.isfile(input_json):
+                    input_json_path = os.path.normpath(input_json)
+                else:
+                    # 不是檔案路徑時，直接處理 JSON 內容
+                    try:
+                        json.loads(input_json)
+                    except json.JSONDecodeError:
+                        logging.warning("Skip followup: input_json is not valid JSON content.")
+                        input_json_path = ""
+                    else:
+                        os.makedirs(path_processModel, exist_ok=True)
+                        with tempfile.NamedTemporaryFile(
+                            mode="w",
+                            suffix=".json",
+                            delete=False,
+                            dir=path_processModel,
+                            encoding="utf-8",
+                        ) as temp_fp:
+                            temp_fp.write(input_json)
+                            input_json_path = temp_fp.name
+                            temp_json_paths.append(temp_fp.name)
+            else:
+                # 未提供 input_json 時，不執行 followup
+                input_json_path = ""
+
+            outputs = []
+            if input_json_path:
+                start_followup = time.time()
+                try:
+                    outputs, has_model = pipeline_followup_v3_platform(
+                        input_json=pathlib.Path(input_json_path),
+                        path_process=followup_process_root,
+                        model="WMH",
+                        model_type=4,
+                        case_id=ID,
+                        platform_json_name="Pred_WMH_platform_json.json",
+                        path_followup_root=followup_output_root,
+                    )
+                    logging.info(
+                        "Followup-v3 outputs=%d has_model=%s", len(outputs), has_model
+                    )
+                    print(
+                        f"[FollowUp] outputs={len(outputs)} has_model={has_model}"
+                    )
+                except Exception as exc:
+                    has_model = False
+                    logging.error("Followup-v3 platform failed.", exc_info=True)
+                    print(f"[FollowUp] Error: followup-v3 platform failed: {exc!r}")
+
+                print(
+                    f"[Done followup-v3 platform!!! ] spend {time.time() - start_followup:.0f} sec"
+                )
+                logging.info(
+                    f"[Done followup-v3 platform!!! ] spend {time.time() - start_followup:.0f} sec"
+                )
+            else:
+                has_model = False
+                logging.info("Skip followup-v3 platform: input_json is empty.")
+                print("[FollowUp] Skip: input_json is empty.")
+
+            for temp_path in temp_json_paths:
+                try:
+                    os.remove(temp_path)
+                    logging.info("Remove temp json: %s", temp_path)
+                except OSError:
+                    logging.warning("Failed to remove temp json: %s", temp_path)
+
+            # 接下來，上傳 json
+            json_file_n = os.path.join(path_nnunet, "JSON", ID + "_platform_json.json")
+            # followup 有執行且存在該模型時，上傳 followup 結果（含當前日期主體）
+            if has_model and outputs:
+                for json_path in outputs:
+                    try:
+                        resp = upload_json_aiteam(str(json_path))
+                        logging.info("Upload followup json: %s resp=%s", json_path, resp)
+                        print(f"[Upload] followup json={json_path} resp={resp}")
+                    except Exception as exc:
+                        logging.error("Upload followup json failed: %s", json_path, exc_info=True)
+                        print(f"[Upload] followup json failed: {json_path} err={exc}")
+            else:
+                # followup 未執行或無模型時，上傳原版 JSON
+                try:
+                    resp = upload_json_aiteam(json_file_n)
+                    logging.info("Upload original json: %s resp=%s", json_file_n, resp)
+                    print(f"[Upload] original json={json_file_n} resp={resp}")
+                except Exception as exc:
+                    logging.error("Upload original json failed: %s", json_file_n, exc_info=True)
+                    print(f"[Upload] original json failed: {json_file_n} err={exc}")
+
+            # 若有 followup，就 copy followup JSON 到 output 並以相同檔名保存（覆蓋原版）
+            try:
+                json_src_for_output = json_file_n
+                if has_model and outputs:
+                    case_date_key = ""
+                    try:
+                        parts = str(ID).split("_")
+                        if len(parts) >= 2 and len(parts[1]) == 8 and parts[1].isdigit():
+                            case_date_key = parts[1]
+                    except Exception:
+                        case_date_key = ""
+                    chosen = None
+                    if case_date_key:
+                        for p in outputs:
+                            if str(getattr(p, "name", "")).endswith(f"_{case_date_key}.json"):
+                                chosen = p
+                                break
+                    if chosen is None and outputs:
+                        chosen = outputs[0]
+                    if chosen is not None:
+                        json_src_for_output = str(chosen)
+
+                shutil.copy(json_src_for_output, os.path.join(path_output, "Pred_WMH_platform_json.json"))
+                logging.info("Copy platform json to output: src=%s", json_src_for_output)
+            except Exception:
+                logging.warning("Failed to copy platform json to output.", exc_info=True)
+
             logging.info('!!! ' + ID +  ' post_wmh finish.')
 
 
@@ -253,6 +416,7 @@ if __name__ == '__main__':
     parser.add_argument('--Inputs', type=str, nargs='+', default = ['/data/4TB1/pipeline/chuan/example_input/01550089_20251117_MR_21411150023/T2FLAIR_AXI.nii.gz'], help='用於輸入的檔案')
     parser.add_argument('--DicomDir', type=str, nargs='+', default = ['/data/4TB1/pipeline/chuan/example_inputDicom/01550089_20251117_MR_21411150023/T2FLAIR_AXI/'], help='用於輸入的檔案')
     parser.add_argument('--Output_folder', type=str, default = '/data/4TB1/pipeline/chuan/example_output/01550089_20251117_MR_21411150023/',help='用於輸出結果的資料夾')    
+    parser.add_argument('--input_json', type=str, default = '', help='followup-v3 平台輸入 json 內容或檔案路徑')
     parser.add_argument('--gpu_n', type=int, default = 0, help='使用哪一顆gpu')
     args = parser.parse_args()
 
@@ -262,6 +426,7 @@ if __name__ == '__main__':
     path_output = str(args.Output_folder)
     if "--Output_folder" not in sys.argv:
         path_output = _env_path("RADX_OUTPUT_ROOT", path_output)
+    input_json = str(args.input_json)
     print('DicomDirs:', DicomDirs)
 
     #下面設定各個路徑
@@ -288,7 +453,7 @@ if __name__ == '__main__':
     os.makedirs(path_output,exist_ok=True)
 
     #直接當作function的輸入，因為可能會切換成nnUNet的版本，所以自訂化模型移到跟model一起，synthseg自己做，不用統一
-    pipeline_wmh(ID, Inputs, DicomDirs, path_output, path_code, path_nnunet_model, path_processModel, path_json, path_log, gpu_n)
+    pipeline_wmh(ID, Inputs, DicomDirs, path_output, path_code, path_nnunet_model, path_processModel, path_json, path_log, gpu_n, input_json)
 
     # #最後再讀取json檔結果
     # with open(json_path_name) as f:

@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -144,6 +144,7 @@ def execute_dicomseg_platform_json(_id: str, root_path: Path, group_id: int = 57
     output_path = json_dir / f"{_id}_platform_json.json"
     payload = ai_request.model_dump(mode="json")
     _merge_study_models(payload)
+    _init_followup_fields(payload)
     try:
         study_date_val = ""
         if isinstance(payload.get("study"), dict):
@@ -155,6 +156,44 @@ def execute_dicomseg_platform_json(_id: str, root_path: Path, group_id: int = 57
     with open(output_path, "w", encoding="utf-8") as fp:
         json.dump(payload, fp, indent=2, ensure_ascii=False)
     return output_path
+
+
+def _init_followup_fields(payload: Dict[str, Any]) -> None:
+    """初始化 followup 欄位（baseline JSON 也要有空陣列），對齊 aneurysm 行為。"""
+    if not isinstance(payload, dict):
+        return
+
+    study = payload.get("study")
+    if isinstance(study, dict):
+        models = study.get("model")
+        if isinstance(models, list):
+            for model in models:
+                if isinstance(model, dict) and not isinstance(model.get("followup"), list):
+                    model["followup"] = []
+
+    mask = payload.get("mask")
+    if isinstance(mask, dict):
+        mask_models = mask.get("model")
+        if isinstance(mask_models, list):
+            for model in mask_models:
+                if not isinstance(model, dict):
+                    continue
+                series_list = model.get("series")
+                if not isinstance(series_list, list):
+                    continue
+                for series in series_list:
+                    if not isinstance(series, dict):
+                        continue
+                    instances = series.get("instances")
+                    if not isinstance(instances, list):
+                        continue
+                    for inst in instances:
+                        if isinstance(inst, dict) and not isinstance(inst.get("followup"), list):
+                            inst["followup"] = []
+
+    # followup-v3 會用到；baseline 也先放空 list，避免缺欄位
+    if not isinstance(payload.get("sorted_slice"), list):
+        payload["sorted_slice"] = []
 
 
 def _load_dataset_config() -> Dict[str, Dict[str, List[int]]]:

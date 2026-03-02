@@ -28,7 +28,8 @@ conda activate "${RADX_CONDA_ENV:-tf_2_14}"
 # 執行你的 python 程式，並傳入參數
 PY_BIN="${RADX_PYTHON_BIN:-python}"
 PIPELINE_PY="${RADX_PIPELINE_INFARCT_PY:-$SCRIPT_DIR/pipeline_infarct_torch.py}"
-$PY_BIN "$PIPELINE_PY" --ID "$1" --Inputs "$2" "$3" "$4" --DicomDir "$5" "$6" "$7" --Output_folder "$8"
+# $9 可選：followup-v3 input_json（檔案路徑或 JSON 內容）
+$PY_BIN "$PIPELINE_PY" --ID "$1" --Inputs "$2" "$3" "$4" --DicomDir "$5" "$6" "$7" --Output_folder "$8" --input_json "${9:-}"
 
 # 停用環境
 conda deactivate

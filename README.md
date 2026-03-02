@@ -612,6 +612,26 @@ pip install numpy==1.26.4
 
 ---
 
+## 環境設定檔換行字元轉換
+
+`config/*.env` 與 `*.sh` 在 Windows 上編輯後會變成 CRLF (`\r\n`) 換行，在 Ubuntu 上 `source` 時會導致變數值尾巴多出 `\r` 而異常。部署到 Ubuntu **前**請先轉換：
+
+```bash
+# 安裝 dos2unix（僅需一次）
+sudo apt install dos2unix
+
+# 轉換所有 .env 與 .sh
+dos2unix config/*.env *.sh
+```
+
+如果還遇到 UTF-8 BOM 問題，可加上：
+
+```bash
+sed -i '1s/^\xEF\xBB\xBF//' config/*.env
+```
+
+---
+
 ## 系統配置
 
 ### 共用路徑配置

@@ -386,8 +386,6 @@ def pipeline_aneurysm(ID,
             shutil.copy(os.path.join(path_nnunet, 'Prob.nii.gz'), os.path.join(path_output, 'Prob_Aneurysm.nii.gz'))
             shutil.copy(os.path.join(path_processID, 'Vessel.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm_Vessel.nii.gz'))
             shutil.copy(os.path.join(path_processID, 'Vessel_16.nii.gz'), os.path.join(path_output, 'Pred_Aneurysm_Vessel16.nii.gz'))
-            shutil.copy(os.path.join(path_json_out_n, ID + '_platform_json.json'), os.path.join(path_output, 'Pred_Aneurysm.json'))
-            shutil.copy(os.path.join(path_json_out_n, ID + '_platform_json.json'), os.path.join(path_output, 'Pred_Aneurysm_platform_json.json'))
 
             #SynthSEG要複製到output資料夾
             shutil.copy(os.path.join(path_nii_n, 'NEW_MRA_BRAIN_synthseg33.nii.gz'), os.path.join(path_output, 'SynthSEG_Aneurysm.nii.gz'))
@@ -572,6 +570,34 @@ def pipeline_aneurysm(ID,
                 except Exception as exc:
                     logging.error("Upload original json failed: %s", json_file_n, exc_info=True)
                     print(f"[Upload] original json failed: {json_file_n} err={exc}")
+
+            # 若有 followup，就 copy followup JSON 到 output 並以相同檔名保存（覆蓋原版）
+            try:
+                json_src_for_output = json_file_n
+                if has_model and outputs:
+                    case_date_key = ""
+                    try:
+                        parts = str(ID).split("_")
+                        if len(parts) >= 2 and len(parts[1]) == 8 and parts[1].isdigit():
+                            case_date_key = parts[1]
+                    except Exception:
+                        case_date_key = ""
+                    chosen = None
+                    if case_date_key:
+                        for p in outputs:
+                            if str(getattr(p, "name", "")).endswith(f"_{case_date_key}.json"):
+                                chosen = p
+                                break
+                    if chosen is None and outputs:
+                        chosen = outputs[0]
+                    if chosen is not None:
+                        json_src_for_output = str(chosen)
+
+                shutil.copy(json_src_for_output, os.path.join(path_output, "Pred_Aneurysm.json"))
+                shutil.copy(json_src_for_output, os.path.join(path_output, "Pred_Aneurysm_platform_json.json"))
+                logging.info("Copy platform json to output: src=%s", json_src_for_output)
+            except Exception:
+                logging.warning("Failed to copy platform json to output.", exc_info=True)
         
         else:
             logging.error('!!! ' + str(ID) + ' Insufficient GPU Memory.')

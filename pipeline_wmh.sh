@@ -28,7 +28,8 @@ conda activate "${RADX_CONDA_ENV:-tf_2_14}"
 # 執行你的 python 程式，並傳入參數
 PY_BIN="${RADX_PYTHON_BIN:-python}"
 PIPELINE_PY="${RADX_PIPELINE_WMH_PY:-$SCRIPT_DIR/pipeline_wmh_torch.py}"
-$PY_BIN "$PIPELINE_PY" --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4"
+# $5 可選：followup-v3 input_json（檔案路徑或 JSON 內容）
+$PY_BIN "$PIPELINE_PY" --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4" --input_json "${5:-}"
 
 # 停用環境
 conda deactivate
