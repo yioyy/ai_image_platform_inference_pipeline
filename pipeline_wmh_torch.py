@@ -275,28 +275,35 @@ def pipeline_wmh(ID,
             # 若有提供 input_json（可能是檔案路徑或 JSON 內容）
             input_json = str(input_json).strip().replace("\r", "").replace("\n", "")
             if input_json:
-                # 若是檔案路徑，直接使用
+                raw_data = None
                 if os.path.isfile(input_json):
-                    input_json_path = os.path.normpath(input_json)
-                else:
-                    # 不是檔案路徑時，直接處理 JSON 內容
                     try:
-                        json.loads(input_json)
+                        with open(input_json, "r", encoding="utf-8") as _f:
+                            raw_data = json.load(_f)
+                    except (json.JSONDecodeError, OSError):
+                        logging.warning("Skip followup: input_json file is not valid JSON.")
+                else:
+                    try:
+                        raw_data = json.loads(input_json)
                     except json.JSONDecodeError:
                         logging.warning("Skip followup: input_json is not valid JSON content.")
-                        input_json_path = ""
-                    else:
-                        os.makedirs(path_processModel, exist_ok=True)
-                        with tempfile.NamedTemporaryFile(
-                            mode="w",
-                            suffix=".json",
-                            delete=False,
-                            dir=path_processModel,
-                            encoding="utf-8",
-                        ) as temp_fp:
-                            temp_fp.write(input_json)
-                            input_json_path = temp_fp.name
-                            temp_json_paths.append(temp_fp.name)
+
+                if raw_data is not None:
+                    if isinstance(raw_data, list):
+                        raw_data = {"needFollowup": raw_data}
+                    os.makedirs(path_processModel, exist_ok=True)
+                    with tempfile.NamedTemporaryFile(
+                        mode="w",
+                        suffix=".json",
+                        delete=False,
+                        dir=path_processModel,
+                        encoding="utf-8",
+                    ) as temp_fp:
+                        json.dump(raw_data, temp_fp, ensure_ascii=False)
+                        input_json_path = temp_fp.name
+                        temp_json_paths.append(temp_fp.name)
+                else:
+                    input_json_path = ""
             else:
                 # 未提供 input_json 時，不執行 followup
                 input_json_path = ""

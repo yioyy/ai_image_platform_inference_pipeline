@@ -140,6 +140,32 @@ def custom_normalize_1(volume, mask=None, new_min=0., new_max=0.5, min_percentil
 #     new_volume = np.clip(new_volume, 0, 1)
     return new_volume
 
+def get_struc(diameter, spacing):  # diameter in mm
+    structure_size = np.round(diameter / np.array(spacing)).astype('int32')
+    structure_size = np.maximum([1,1,1], structure_size)
+    structure = resize_volume(ball(diameter*5), target_size=structure_size, dtype='bool')
+    center_point = np.array(structure.shape) // 2
+    structure[center_point] = True
+    return structure
+
+def resize_volume(arr, spacing=None, target_spacing=None, target_size=None, order=3, dtype='float32'):
+    if ("int8" in dtype)or(dtype == "bool"):
+        order = 0
+
+    if (spacing is not None)and(target_spacing is not None):
+        scale = np.array(spacing) / np.array(target_spacing)
+        out_vol = ndi.zoom(arr, zoom=scale, order=order,
+                           mode='grid-mirror', prefilter=True, grid_mode=False)
+    elif target_size is not None:
+        scale = np.array(target_size) / np.array(arr.shape)
+        out_vol = ndi.zoom(arr, zoom=scale, output=np.zeros(target_size, dtype=dtype), order=order,
+                           mode='grid-mirror', prefilter=True, grid_mode=False)
+
+    if 'int' in dtype:
+        dtype_info = np.iinfo(dtype)
+        out_vol = np.clip(out_vol, dtype_info.min, dtype_info.max)
+    return out_vol.astype(dtype)
+
 #@title Load image
 def load_volume(path_volume, im_only=False, squeeze=True, dtype=None, LPS_coor=True):
     """

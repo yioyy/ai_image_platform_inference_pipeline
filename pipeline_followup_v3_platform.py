@@ -89,7 +89,13 @@ def pipeline_followup_v3_platform(
 ) -> Tuple[List[Path], bool]:
     LOGGER.info("Load input json: %s", input_json)
     print(f"[FollowUp] Load input json: {input_json}")
-    payload = _read_json(input_json)
+    raw = _read_json(input_json)
+    if isinstance(raw, list):
+        payload: Dict[str, Any] = {"needFollowup": raw}
+    elif isinstance(raw, dict):
+        payload = raw
+    else:
+        raise TypeError(f"input_json 頂層必須是 dict 或 list，實際為 {type(raw).__name__}")
     latest_date_key = _get_latest_date_key(payload)
     case_id_date_key = _case_id_to_date_key(case_id)
     LOGGER.info("Resolve studies (latest_date_key=%s, case_id=%s)", latest_date_key, case_id or "")
@@ -1548,7 +1554,7 @@ def _safe_str(value: Any) -> str:
     return str(value)
 
 
-def _read_json(path: Path) -> Dict[str, Any]:
+def _read_json(path: Path) -> Any:
     if not path.exists():
         raise FileNotFoundError(f"找不到 JSON：{path}")
     return json.loads(path.read_text(encoding="utf-8"))
