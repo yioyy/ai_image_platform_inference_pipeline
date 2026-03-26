@@ -15,7 +15,7 @@ from typing import List, Optional
 import cv2  # type: ignore
 import pydicom
 from color_img_to_dicom import color_img_to_dicom_combine
-from util_aneurysm import orthanc_zip_upload, upload_json_aiteam
+from util_aneurysm import orthanc_zip_upload
 from infarct_pipeline import InfarctPipeline
 
 
@@ -74,10 +74,7 @@ def after_run(
         except Exception as exc:  # noqa: BLE001
             logging.warning("上傳 DICOM 失敗: %s", exc)
 
-        try:
-            upload_json_aiteam(str(json_path))
-        except Exception as exc:  # noqa: BLE001
-            logging.warning("上傳 JSON 失敗: %s", exc)
+        # JSON 上傳統一由 pipeline_infarct_torch 主流程控制（避免 followup 時重複上傳）
 
         logging.info("after_run done: %s (%.0f sec)", patient_id, time.time() - start_time)
         return True

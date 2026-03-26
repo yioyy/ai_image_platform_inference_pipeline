@@ -340,6 +340,13 @@ def pipeline_infarct(ID,
                 logging.error('!!! ' + ID + ' after_run failed.')
                 return logging.error('!!! ' + ID + ' after_run failed.')
 
+            # 複製 SynthSEG 到 path_output，供 followup 使用
+            src_synthseg_for_output = os.path.join(path_nnunet, "Image_nii", "SynthSEG.nii.gz")
+            if not os.path.isfile(src_synthseg_for_output):
+                src_synthseg_for_output = os.path.join(path_processID, "SynthSEG.nii.gz")
+            if os.path.isfile(src_synthseg_for_output):
+                shutil.copy(src_synthseg_for_output, os.path.join(path_output, "SynthSEG_Infarct.nii.gz"))
+
             # ============ followup-v3 platform（可選）============
             followup_process_root = pathlib.Path(
                 os.getenv(
@@ -352,30 +359,39 @@ def pipeline_infarct(ID,
             )
 
             # 先把本次 case 的必要檔名補到 followup case 目錄（避免 followup 找不到檔）
-            try:
-                case_dir = (
-                    followup_process_root
-                    if followup_process_root.name == ID
-                    else followup_process_root / ID
-                )
-                os.makedirs(case_dir, exist_ok=True)
+            case_dir = (
+                followup_process_root
+                if followup_process_root.name == ID
+                else followup_process_root / ID
+            )
+            os.makedirs(case_dir, exist_ok=True)
 
-                src_pred = os.path.join(path_output, "Pred_Infarct.nii.gz")
-                if os.path.isfile(src_pred):
-                    shutil.copy(src_pred, os.path.join(case_dir, "Pred_Infarct.nii.gz"))
-
-                src_synthseg = os.path.join(path_nnunet, "Image_nii", "SynthSEG.nii.gz")
-                if os.path.isfile(src_synthseg):
-                    shutil.copy(src_synthseg, os.path.join(case_dir, "SynthSEG_Infarct.nii.gz"))
-
-                json_file_n = os.path.join(path_nnunet, "JSON", ID + "_platform_json.json")
-                if os.path.isfile(json_file_n):
-                    shutil.copy(
-                        json_file_n,
-                        os.path.join(case_dir, "Pred_Infarct_platform_json.json"),
-                    )
-            except Exception as exc:
-                logging.warning("Prepare followup case files failed: %s", exc)
+            for src, dst, label in [
+                (
+                    os.path.join(path_output, "Pred_Infarct.nii.gz"),
+                    os.path.join(case_dir, "Pred_Infarct.nii.gz"),
+                    "Pred_Infarct",
+                ),
+                (
+                    os.path.join(path_nnunet, "Image_nii", "SynthSEG.nii.gz")
+                    if os.path.isfile(os.path.join(path_nnunet, "Image_nii", "SynthSEG.nii.gz"))
+                    else os.path.join(path_processID, "SynthSEG.nii.gz"),
+                    os.path.join(case_dir, "SynthSEG_Infarct.nii.gz"),
+                    "SynthSEG_Infarct",
+                ),
+                (
+                    os.path.join(path_nnunet, "JSON", ID + "_platform_json.json"),
+                    os.path.join(case_dir, "Pred_Infarct_platform_json.json"),
+                    "Pred_Infarct_platform_json",
+                ),
+            ]:
+                try:
+                    if os.path.isfile(src):
+                        shutil.copy(src, dst)
+                    else:
+                        logging.warning("Prepare followup: %s not found: %s", label, src)
+                except Exception as exc:
+                    logging.warning("Copy %s failed: %s", label, exc)
 
             temp_json_paths = []
             # 若有提供 input_json（可能是檔案路徑或 JSON 內容）
