@@ -329,26 +329,44 @@ def _run_single_comparison(
     if current_pred.shape != prior_pred_reg.shape:
         raise ValueError("current 與 prior(reg) shape 不一致")
 
-    mat = _load_fsl_mat(mat_file)
+    fsl_mat = _load_fsl_mat(mat_file)
     matches, used_prior_labels = _match_by_overlap(current_pred, prior_pred_reg)
+
+    # --- 將 FSL mat 從 mm-scaled 空間轉換到 voxel-index 空間 ---
+    # 取得 registration 使用的 pixdim（若有 min1mm resample，Z 軸通常不變）
+    ref_zooms = _get_zooms_3d(baseline_synthseg)
+    mov_zooms = _get_zooms_3d(followup_synthseg)
+    # min1mm resample 會把 < 1mm 的軸放大到 1mm
+    ref_reg_pixdims = tuple(max(z, 1.0) for z in ref_zooms)
+    mov_reg_pixdims = tuple(max(z, 1.0) for z in mov_zooms)
+    voxel_mat = _fsl_mat_to_voxel_mat(fsl_mat, ref_reg_pixdims, mov_reg_pixdims)
     LOGGER.info(
-        "Build sorted_slice mapping: current_slices=%d prior_slices=%d",
+        "FSL mat[2,3]=%.4f -> voxel_mat[2,3]=%.4f (ref_z=%.2f mov_z=%.2f)",
+        fsl_mat[2, 3], voxel_mat[2, 3], ref_reg_pixdims[2], mov_reg_pixdims[2],
+    )
+
+    # prior_slices 應使用原始 followup 的 Z 維度（非 registered 後的 baseline 空間）
+    followup_img = nib.load(str(followup_synthseg))
+    original_prior_slices = followup_img.shape[2]
+    LOGGER.info(
+        "Build sorted_slice mapping: current_slices=%d prior_slices=%d (original_followup_z=%d)",
         current_pred.shape[2],
         prior_pred_reg.shape[2],
+        original_prior_slices,
     )
     sorted_mapping, reverse_sorted_mapping = _build_sorted_mapping_one_based(
         current_slices=current_pred.shape[2],
-        prior_slices=prior_pred_reg.shape[2],
-        mat=mat,
+        prior_slices=original_prior_slices,
+        mat=voxel_mat,
     )
     if sorted_mapping and reverse_sorted_mapping:
         LOGGER.info(
             "sorted_slice sample: current 1->prior %s, prior 1->current %s",
-            sorted_mapping[0].get("prior_slice"),
+            sorted_mapping[0].get("followup_slice"),
             reverse_sorted_mapping[0].get("current_slice"),
         )
     return {
-        "mat": mat,
+        "mat": voxel_mat,
         "matches": matches,
         "used_prior_labels": used_prior_labels,
         "sorted_mapping": sorted_mapping,
@@ -1068,6 +1086,8 @@ def _default_synthseg_filename(model_name: str) -> str:
     model_key = model_name.strip().lower()
     if model_key == "cmb":
         return "synthseg_SWAN_original_CMB_from_T1BRAVO_AXI_original_CMB.nii.gz"
+    if model_key == "wmh":
+        return "SynthSEG_Brain_WMH.nii.gz"
     return f"SynthSEG_{model_name}.nii.gz"
 
 
@@ -1327,25 +1347,23 @@ def _map_sop_uid_by_projection(
     mat: np.ndarray,
     direction: str,
 ) -> str:
+    """使用 voxel-space mat 將 source slice 映射到 target slice。
+
+    利用 sorted slice 的索引位置作為 voxel Z index，
+    透過 voxel_mat 進行座標轉換。
+    """
     if not source_uid or not source_sorted or not target_sorted:
         return ""
-    z_src = None
-    for item in source_sorted:
+    src_idx = None
+    for i, item in enumerate(source_sorted):
         if item.sop_instance_uid == source_uid:
-            z_src = item.projection
+            src_idx = i
             break
-    if z_src is None:
+    if src_idx is None:
         return ""
     m = mat if direction == "F2B" else _safe_inv(mat)
-    z_tgt = float(m[2, 2] * z_src + m[2, 3])
-    projections = np.asarray([t.projection for t in target_sorted], dtype=np.float64)
-    idx = int(np.searchsorted(projections, z_tgt))
-    if idx <= 0:
-        return target_sorted[0].sop_instance_uid
-    if idx >= len(target_sorted):
-        return target_sorted[-1].sop_instance_uid
-    prev_i = idx - 1
-    chosen = idx if abs(projections[idx] - z_tgt) < abs(projections[prev_i] - z_tgt) else prev_i
+    tgt_idx = float(m[2, 2] * src_idx + m[2, 3])
+    chosen = int(np.clip(np.rint(tgt_idx), 0, len(target_sorted) - 1))
     return target_sorted[chosen].sop_instance_uid
 
 
@@ -1532,6 +1550,42 @@ def _load_fsl_mat(path: Path) -> np.ndarray:
     if mat.shape != (4, 4):
         raise ValueError(f"registration mat 必須為 4x4：{path} (shape={mat.shape})")
     return mat
+
+
+def _fsl_mat_to_voxel_mat(
+    fsl_mat: np.ndarray,
+    ref_pixdims: Tuple[float, float, float],
+    mov_pixdims: Tuple[float, float, float],
+) -> np.ndarray:
+    """將 FSL FLIRT 矩陣從 FSL mm-scaled 空間轉換到 voxel-index 空間。
+
+    FSL FLIRT 矩陣在 ``voxel × pixdim`` 的 mm 座標空間運作：
+        ref_fsl = fsl_mat × mov_fsl
+    其中 fsl = diag(pixdim) × voxel。
+
+    轉換後的 voxel_mat 直接映射 voxel index：
+        ref_voxel = voxel_mat × mov_voxel
+    """
+    S_ref_inv = np.diag([
+        1.0 / ref_pixdims[0],
+        1.0 / ref_pixdims[1],
+        1.0 / ref_pixdims[2],
+        1.0,
+    ])
+    S_mov = np.diag([
+        mov_pixdims[0],
+        mov_pixdims[1],
+        mov_pixdims[2],
+        1.0,
+    ])
+    return S_ref_inv @ fsl_mat @ S_mov
+
+
+def _get_zooms_3d(path: Path) -> Tuple[float, float, float]:
+    """讀取 NIfTI 的 3D voxel size (pixdim)。"""
+    img = nib.load(str(path))
+    zooms = img.header.get_zooms()
+    return (abs(float(zooms[0])), abs(float(zooms[1])), abs(float(zooms[2])))
 
 
 def _safe_inv(mat: np.ndarray) -> np.ndarray:

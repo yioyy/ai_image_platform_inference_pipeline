@@ -241,6 +241,13 @@ def pipeline_wmh(ID,
             if os.path.isfile(src_synthseg_for_output):
                 shutil.copy(src_synthseg_for_output, os.path.join(path_output, "SynthSEG_WMH.nii.gz"))
 
+            # 複製 SynthSEG_Brain 到 path_output，供 followup 對位使用
+            src_synthseg_brain_for_output = os.path.join(path_nnunet, "Image_nii", "SynthSEG_Brain.nii.gz")
+            if not os.path.isfile(src_synthseg_brain_for_output):
+                src_synthseg_brain_for_output = os.path.join(path_processID, "SynthSEG_Brain.nii.gz")
+            if os.path.isfile(src_synthseg_brain_for_output):
+                shutil.copy(src_synthseg_brain_for_output, os.path.join(path_output, "SynthSEG_Brain_WMH.nii.gz"))
+
             # ============ followup-v3 platform（可選）============
             followup_process_root = pathlib.Path(
                 os.getenv(
@@ -267,11 +274,11 @@ def pipeline_wmh(ID,
                     "Pred_WMH",
                 ),
                 (
-                    os.path.join(path_nnunet, "Image_nii", "SynthSEG.nii.gz")
-                    if os.path.isfile(os.path.join(path_nnunet, "Image_nii", "SynthSEG.nii.gz"))
-                    else os.path.join(path_processID, "SynthSEG.nii.gz"),
-                    os.path.join(case_dir, "SynthSEG_WMH.nii.gz"),
-                    "SynthSEG_WMH",
+                    os.path.join(path_nnunet, "Image_nii", "SynthSEG_Brain.nii.gz")
+                    if os.path.isfile(os.path.join(path_nnunet, "Image_nii", "SynthSEG_Brain.nii.gz"))
+                    else os.path.join(path_processID, "SynthSEG_Brain.nii.gz"),
+                    os.path.join(case_dir, "SynthSEG_Brain_WMH.nii.gz"),
+                    "SynthSEG_Brain_WMH",
                 ),
                 (
                     os.path.join(path_nnunet, "JSON", ID + "_platform_json.json"),
