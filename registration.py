@@ -324,8 +324,9 @@ def _run_cmd(cmd: list[str], *, hint: Optional[str] = None) -> None:
     else:
         logging.info("RUN: %s", cmd_str)
         print(f"RUN: {cmd_str}", flush=True)
+    env = {**__import__("os").environ, "FSLOUTPUTTYPE": "NIFTI_GZ"}
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
         logging.info("DONE %s", hint or cmd[0])
         print(f"DONE {hint or cmd[0]}", flush=True)
     except FileNotFoundError as exc:

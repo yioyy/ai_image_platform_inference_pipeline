@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(code --install-extension eamodio.gitlens)",
+      "Bash(code --install-extension Codeium.codeium)",
+      "Bash(code --list-extensions)",
+      "Bash(code --install-extension Codeium.windsurf-codeium)",
+      "Bash(code --install-extension Codeium.codeium-enterprise)",
+      "Bash(code --version)",
+      "Bash(cursor --version)",
+      "Bash(code --install-extension GitHub.copilot)",
+      "Bash(code --install-extension GitHub.copilot-chat)",
+      "Bash(code --install-extension github.copilot)",
+      "Bash(xargs grep:*)",
+      "Bash(python -c \":*)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''pipeline_followup_v3_platform.py'', doraise=True\\); print\\(''OK''\\)\")"
+    ]
+  }
+}
