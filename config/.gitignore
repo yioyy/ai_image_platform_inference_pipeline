@@ -1,0 +1,5 @@
+radax.env
+*.bak*
+__pycache__/
+!radax-official.env
+!radax-test.env
