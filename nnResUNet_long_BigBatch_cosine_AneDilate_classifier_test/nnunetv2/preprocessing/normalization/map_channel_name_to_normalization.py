@@ -1,7 +1,7 @@
 from typing import Type
 
 from nnunetv2.preprocessing.normalization.default_normalization_schemes import CTNormalization, NoNormalization, \
-    ZScoreNormalization, RescaleTo01Normalization, RGBTo01Normalization, ImageNormalization, ADCNormalization, ZScoreBrainNormalization, ZScoreImageNormalization
+    ZScoreNormalization, RescaleTo01Normalization, RGBTo01Normalization, ImageNormalization, ADCNormalization, ZScoreBrainNormalization, ZScoreImageNormalization, MRI_custom_normalize_1, CTANormalization, Max995_Min005_Normalization
 
 channel_name_to_normalization_mapping = {
     'CT': CTNormalization,
@@ -15,6 +15,10 @@ channel_name_to_normalization_mapping = {
     'SynthSEG33': NoNormalization,
     'SynthSegDWI': NoNormalization,
     'MRA_BRAIN': NoNormalization,
+    'MRI_custom_normalize_1': MRI_custom_normalize_1,
+    'CTA': CTANormalization,
+    'MRA': Max995_Min005_Normalization,
+    'MultiSeries': Max995_Min005_Normalization
 }
 
 
