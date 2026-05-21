@@ -21,6 +21,7 @@ import numpy as np
 import torch
 from batchgenerators.dataloading.data_loader import DataLoader
 from batchgenerators.dataloading.multi_threaded_augmenter import MultiThreadedAugmenter
+from batchgenerators.dataloading.single_threaded_augmenter import SingleThreadedAugmenter
 from batchgenerators.transforms.utility_transforms import NumpyToTensor
 from batchgenerators.utilities.file_and_folder_operations import load_json, join, isfile, maybe_mkdir_p, isdir, subdirs, \
     save_json, save_pickle
@@ -714,13 +715,13 @@ def predict_from_raw_data(list_of_lists_or_source_folder: Union[str, List[List[s
     # hijack batchgenerators, yo
     # we use the multiprocessing of the batchgenerators dataloader to handle all the background worker stuff. This
     # way we don't have to reinvent the wheel here.
-    num_processes = max(1, min(num_processes_preprocessing, len(list_of_lists_or_source_folder)))
+    num_processes = 1
     #print('seg_from_prev_stage_files:', seg_from_prev_stage_files) #這邊原本都是None
     
     ppa = PreprocessAdapter(list_of_lists_or_source_folder, Mask_list_of_lists_or_Mask_folder, preprocessor,
                             output_filename_truncated, plans_manager, dataset_json,
                             configuration_manager, num_processes)
-    mta = MultiThreadedAugmenter(ppa, NumpyToTensor(), num_processes, 1, None, pin_memory=device.type == 'cuda')
+    mta = SingleThreadedAugmenter(ppa, NumpyToTensor())
     
     # precompute gaussian
     inference_gaussian = torch.from_numpy(

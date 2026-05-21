@@ -306,7 +306,7 @@ def pipeline_aneurysm(ID,
 
             # 定義要傳入的參數，建立指令
             cmd = [
-                   "python", "/home/david/pipeline/chuan/radax/gpu_aneurysm.py",
+                   "python", os.path.join(path_code, "gpu_aneurysm.py"),
                    "--path_code", path_code,
                    "--path_process", path_processID,
                    "--path_brain_model", path_brain_model,
