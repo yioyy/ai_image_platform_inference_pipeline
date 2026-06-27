@@ -119,8 +119,12 @@ def _get_redis():
 
 
 @contextlib.contextmanager
-def _gpu_lock():
-    """Redis mutex for shared 1-GPU mode. No-op if LAZY_GPU_SWAP=0."""
+def _redis_gpu_lock():
+    """Redis cross-container mutex for shared 1-GPU mode. No-op if LAZY_GPU_SWAP=0.
+
+    Note: original _gpu_lock = threading.Lock() (line ~164) is in-process serialization
+    and stays untouched. This redis lock layers ON TOP for cross-container coordination.
+    """
     if not _LAZY_GPU_SWAP:
         yield
         return
@@ -501,7 +505,7 @@ def _run_synthseg_pytorch(
 
     # ── GPU phase: lock + (optional) lazy swap + forward unet2 (+ parc) ──────
     parc_output = None
-    with _gpu_lock():
+    with _redis_gpu_lock():
         cuda_device = torch.device(f"cuda:{_GPU_N}" if torch.cuda.is_available() else "cpu")
         if _LAZY_GPU_SWAP and cuda_device.type == "cuda":
             t0 = time.time()
