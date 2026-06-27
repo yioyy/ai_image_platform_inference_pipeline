@@ -89,6 +89,67 @@ _GPU_N = int(os.environ.get("GPU_N", "0"))
 
 logger.info("Backend: %s  GPU: %d  BP_ROOT: %s", _BACKEND, _GPU_N, _BP_ROOT)
 
+# ── RAD Phase 3a: lazy CPU<->GPU swap + redis lock ────────────────────────────
+# Enabled by LAZY_GPU_SWAP=1. Model load goes to CPU RAM at startup; per /predict,
+# acquire redis gpu_lock, swap to GPU, forward, move result to CPU, swap back,
+# release lock. PyTorch backend only — ONNX/TF unchanged.
+import contextlib
+
+_LAZY_GPU_SWAP = os.environ.get("LAZY_GPU_SWAP", "0") == "1"
+_GPU_LOCK_REDIS_URL = os.environ.get("GPU_LOCK_REDIS_URL", "redis://localhost:10079/2")
+_GPU_LOCK_KEY = os.environ.get("GPU_LOCK_KEY", "rad_gpu_0")
+_GPU_LOCK_TIMEOUT_S = int(os.environ.get("GPU_LOCK_TIMEOUT_S", "1800"))
+
+if _LAZY_GPU_SWAP:
+    logger.info(
+        "LAZY_GPU_SWAP=1: model in CPU RAM idle, swap to GPU per request "
+        "(lock=%s key=%s timeout=%ds)",
+        _GPU_LOCK_REDIS_URL, _GPU_LOCK_KEY, _GPU_LOCK_TIMEOUT_S,
+    )
+
+_redis_client = None
+
+def _get_redis():
+    """Lazy redis client init (avoid import cost when LAZY_GPU_SWAP=0)."""
+    global _redis_client
+    if _redis_client is None:
+        import redis as _redis
+        _redis_client = _redis.from_url(_GPU_LOCK_REDIS_URL)
+    return _redis_client
+
+
+@contextlib.contextmanager
+def _gpu_lock():
+    """Redis mutex for shared 1-GPU mode. No-op if LAZY_GPU_SWAP=0."""
+    if not _LAZY_GPU_SWAP:
+        yield
+        return
+    r = _get_redis()
+    val = f"synthseg:{os.getpid()}"
+    deadline = time.time() + _GPU_LOCK_TIMEOUT_S
+    acquired = False
+    while time.time() < deadline:
+        if r.set(_GPU_LOCK_KEY, val, nx=True, ex=_GPU_LOCK_TIMEOUT_S):
+            acquired = True
+            logger.info("[gpu_lock] acquired by %s", val)
+            break
+        time.sleep(0.5)
+    if not acquired:
+        raise TimeoutError(
+            f"GPU lock not acquired within {_GPU_LOCK_TIMEOUT_S}s by {val}"
+        )
+    try:
+        yield
+    finally:
+        # Lua: only delete if we still own it (guard against TTL expire race)
+        lua = (
+            "if redis.call('get', KEYS[1]) == ARGV[1] then "
+            "return redis.call('del', KEYS[1]) else return 0 end"
+        )
+        r.eval(lua, 1, _GPU_LOCK_KEY, val)
+        logger.info("[gpu_lock] released by %s", val)
+
+
 # ── Lazy imports (avoid long TF init at module level) ─────────────────────────
 # These are populated in load_models() on startup.
 _synth_seg = None          # SynthSegOnnx (preprocessing / postprocessing)
@@ -164,21 +225,27 @@ def _load_models_pytorch() -> None:
     if not parc_path.exists():
         raise FileNotFoundError(f"ONNX model not found: {parc_path}")
 
-    logger.info("Loading PyTorch SynthSeg models from %s (GPU %d) …", _ONNX_DIR, _GPU_N)
-    device = torch.device(f"cuda:{_GPU_N}" if torch.cuda.is_available() else "cpu")
+    # RAD Phase 3a: lazy mode loads to CPU (swap to GPU per /predict)
+    if _LAZY_GPU_SWAP:
+        device = torch.device("cpu")
+        logger.info("Loading PyTorch SynthSeg models from %s to CPU (lazy mode) …", _ONNX_DIR)
+    else:
+        device = torch.device(f"cuda:{_GPU_N}" if torch.cuda.is_available() else "cpu")
+        logger.info("Loading PyTorch SynthSeg models from %s (GPU %d) …", _ONNX_DIR, _GPU_N)
 
     _pt_seg  = load_synthseg_from_onnx(str(unet2_path)).to(device)
     _pt_parc = load_parcellation_from_onnx(str(parc_path)).to(device)
-    # Warm-up pass to trigger cuDNN workspace allocation (avoids slow first request)
-    logger.info("PyTorch warm-up pass …")
-    import torch
-    with torch.no_grad():
-        dummy = torch.zeros(1, 1, 192, 192, 192, device=device)
-        _ = _pt_seg(dummy)
-        dummy3 = torch.zeros(1, 3, 192, 192, 192, device=device)
-        _ = _pt_parc(dummy3)
-    del dummy, dummy3
-    torch.cuda.empty_cache()
+
+    # Warm-up only when staying on GPU (lazy mode skips — would just swap right out)
+    if not _LAZY_GPU_SWAP and device.type == "cuda":
+        logger.info("PyTorch warm-up pass …")
+        with torch.no_grad():
+            dummy = torch.zeros(1, 1, 192, 192, 192, device=device)
+            _ = _pt_seg(dummy)
+            dummy3 = torch.zeros(1, 3, 192, 192, 192, device=device)
+            _ = _pt_parc(dummy3)
+        del dummy, dummy3
+        torch.cuda.empty_cache()
 
     # SynthSegOnnx is still needed for pre/postprocessing
     _synth_seg = SynthSegOnnx()
@@ -187,8 +254,9 @@ def _load_models_pytorch() -> None:
         "unet2": str(unet2_path),
         "parcellation": str(parc_path),
         "device": str(device),
+        "lazy_gpu_swap": _LAZY_GPU_SWAP,
     }
-    logger.info("PyTorch models loaded on %s.", device)
+    logger.info("PyTorch models loaded on %s (lazy=%s).", device, _LAZY_GPU_SWAP)
 
 
 def _load_models_tf() -> None:
@@ -424,21 +492,53 @@ def _run_synthseg_pytorch(
     cropping = args["crop"]
     min_pad = utils.reformat_to_list(cropping, length=3, dtype="int") if cropping else 128
 
+    # ── CPU preprocess (outside lock) ─────────────────────────────────────────
     image, aff, h, im_res, shape, pad_idx, crop_idx = _synth_seg.preprocess(
         path_image=str(resample_path), ct=args["ct"], crop=cropping, min_pad=min_pad
     )
-    image = image.astype(np.float32)  # ensure float32 throughout
+    image = image.astype(np.float32)
     # image: [1, H, W, D, 1] channels-last float32
-    device = next(_pt_seg.parameters()).device
 
-    # ── unet2 inference ──────────────────────────────────────────────────────
-    x = torch.from_numpy(image.transpose(0, 4, 1, 2, 3)).to(device)  # [1,1,H,W,D]
-    with torch.no_grad():
-        seg_out = _pt_seg(x)                       # [1, 33, H, W, D]
+    # ── GPU phase: lock + (optional) lazy swap + forward unet2 (+ parc) ──────
+    parc_output = None
+    with _gpu_lock():
+        cuda_device = torch.device(f"cuda:{_GPU_N}" if torch.cuda.is_available() else "cpu")
+        if _LAZY_GPU_SWAP and cuda_device.type == "cuda":
+            t0 = time.time()
+            _pt_seg.to(cuda_device)
+            _pt_parc.to(cuda_device)
+            logger.info("[lazy_swap] CPU->GPU %.2fs", time.time() - t0)
 
-    # Convert back to channel-last for postprocessing
-    unet2_output = seg_out.cpu().numpy().transpose(0, 2, 3, 4, 1)    # [1, H, W, D, 33]
+        try:
+            device = next(_pt_seg.parameters()).device
 
+            # unet2 forward
+            x = torch.from_numpy(image.transpose(0, 4, 1, 2, 3)).to(device)
+            with torch.no_grad():
+                seg_out = _pt_seg(x)
+            unet2_output = seg_out.cpu().numpy().transpose(0, 2, 3, 4, 1)
+            del x, seg_out
+
+            # parcellation forward (optional, still on GPU under same lock)
+            if run_parcellation:
+                idx = unet2_output[0].argmax(-1)
+                mask_1 = np.logical_or(idx == 2, idx == 20).astype(np.float32)
+                mask_2 = np.logical_and(idx != 2, idx != 20).astype(np.float32)
+                parc_np = np.stack([image[0, ..., 0], mask_2, mask_1], axis=0)
+                xp = torch.from_numpy(parc_np).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    parc_out = _pt_parc(xp)
+                parc_output = parc_out.cpu().numpy().transpose(0, 2, 3, 4, 1)
+                del xp, parc_out
+        finally:
+            if _LAZY_GPU_SWAP and cuda_device.type == "cuda":
+                t0 = time.time()
+                _pt_seg.to("cpu")
+                _pt_parc.to("cpu")
+                torch.cuda.empty_cache()
+                logger.info("[lazy_swap] GPU->CPU %.2fs", time.time() - t0)
+
+    # ── CPU postprocess + save (outside lock — fellow containers can use GPU now) ──
     h.set_data_dtype("int16")
     seg33 = _synth_seg.postprocess(
         post_patch_seg=unet2_output,
@@ -456,19 +556,6 @@ def _run_synthseg_pytorch(
 
     if not run_parcellation:
         return
-
-    # ── parcellation inference ────────────────────────────────────────────────
-    idx = unet2_output[0].argmax(-1)                                  # [H, W, D]
-    mask_1 = np.logical_or(idx == 2, idx == 20).astype(np.float32)
-    mask_2 = np.logical_and(idx != 2, idx != 20).astype(np.float32)
-
-    # parc input: [1, H, W, D, 3] → channels-first [1, 3, H, W, D]
-    parc_np = np.stack([image[0, ..., 0], mask_2, mask_1], axis=0)   # [3, H, W, D]
-    xp = torch.from_numpy(parc_np).unsqueeze(0).to(device)            # [1, 3, H, W, D]
-    with torch.no_grad():
-        parc_out = _pt_parc(xp)                    # [1, 69, H, W, D]
-
-    parc_output = parc_out.cpu().numpy().transpose(0, 2, 3, 4, 1)     # [1, H, W, D, 69]
 
     seg_parc = _synth_seg.postprocess(
         post_patch_seg=unet2_output,
