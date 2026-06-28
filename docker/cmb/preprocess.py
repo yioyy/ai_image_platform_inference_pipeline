@@ -57,6 +57,9 @@ def cmb_preprocess(
             shutil.copy(src, dest)
 
         # ── 1. Find pre-computed SynthSeg outputs (from task_pipeline) ──
+        # RAD task_pipeline doesn't pre-compute SynthSeg (ws2030 does), so the
+        # container runs main.py subprocess as a fallback. Phase B will replace
+        # this with in-process import for warm-load benefit.
         import glob
 
         def _find_pre_computed(process_dir, pattern, exclude_patterns=("_from_", )):
@@ -67,23 +70,53 @@ def cmb_preprocess(
                         and not os.path.basename(f).startswith("synthseg_")]
             return filtered
 
-        # SWAN synthseg33
         swan_pre = _find_pre_computed(process_dir, "*SWAN*resample_synthseg33_1mm.nii.gz")
-        if not swan_pre:
-            logger.error("SWAN synthseg33 not found in %s — task_pipeline must run SynthSeg first", process_dir)
-            return False
-        swan_synthseg33 = swan_pre[0]
-        logger.info("[SynthSeg] SWAN: pre-computed → %s", swan_synthseg33)
-
-        # T1 synthseg33 + CMB mask
         t1_pre_33 = _find_pre_computed(process_dir, "*T1*_resample_synthseg33_1mm.nii.gz")
         t1_pre_cmb = _find_pre_computed(process_dir, "*T1*_resample_CMB.nii.gz")
-        if not t1_pre_33 or not t1_pre_cmb:
-            logger.error("T1 synthseg33/CMB mask not found in %s — task_pipeline must run SynthSeg first", process_dir)
-            return False
+
+        if not (swan_pre and t1_pre_33 and t1_pre_cmb):
+            SYNTHSEG_MAIN = "/opt/shh_aiplatform-david/brain-parcellation/code_ai/pipeline/main.py"
+            PY = "/opt/conda/envs/tf_2_14/bin/python"
+            if not os.path.isfile(SYNTHSEG_MAIN):
+                logger.error("[SynthSeg] main.py not found at %s", SYNTHSEG_MAIN)
+                return False
+
+            swan_in_proc = os.path.join(process_dir, "SWAN.nii.gz")
+            t1_in_proc = os.path.join(process_dir, "T1.nii.gz")
+            logger.info("[SynthSeg] pre-computed outputs missing — running main.py subprocess")
+            t_ss = time.time()
+            synthseg_env = {
+                **os.environ,
+                "PYTHONPATH": "/opt/shh_aiplatform-david/brain-parcellation:"
+                              + os.environ.get("PYTHONPATH", ""),
+            }
+            result = subprocess.run(
+                [PY, SYNTHSEG_MAIN,
+                 "-i", swan_in_proc,
+                 "--template", t1_in_proc,
+                 "--output", process_dir,
+                 "--all", "False",
+                 "--CMB", "TRUE"],
+                capture_output=True, text=True, env=synthseg_env, timeout=900,
+            )
+            if result.returncode != 0:
+                logger.error("[SynthSeg] failed (rc=%d): %s",
+                             result.returncode, result.stderr[-1000:])
+                return False
+            logger.info("[SynthSeg] done in %.0fs", time.time() - t_ss)
+
+            swan_pre = _find_pre_computed(process_dir, "*SWAN*resample_synthseg33_1mm.nii.gz")
+            t1_pre_33 = _find_pre_computed(process_dir, "*T1*_resample_synthseg33_1mm.nii.gz")
+            t1_pre_cmb = _find_pre_computed(process_dir, "*T1*_resample_CMB.nii.gz")
+            if not (swan_pre and t1_pre_33 and t1_pre_cmb):
+                logger.error("[SynthSeg] ran but expected outputs still missing in %s", process_dir)
+                return False
+
+        swan_synthseg33 = swan_pre[0]
         t1_synthseg33 = t1_pre_33[0]
         t1_cmb_mask = t1_pre_cmb[0]
-        logger.info("[SynthSeg] T1: pre-computed → %s, %s",
+        logger.info("[SynthSeg] SWAN: %s", os.path.basename(swan_synthseg33))
+        logger.info("[SynthSeg] T1: %s, %s",
                     os.path.basename(t1_synthseg33), os.path.basename(t1_cmb_mask))
 
         # ── 2. FLIRT rigid registration: T1_synthseg33 → SWAN_synthseg33 ──

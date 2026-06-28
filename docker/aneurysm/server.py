@@ -161,6 +161,14 @@ app = FastAPI(title="Aneurysm Three-Layer Inference Server")
 @app.get("/health")
 def health():
     gpu_info = check_gpu_health()
+    if not gpu_info["gpu_ok"]:
+        # nvidia-container-toolkit cgroup denial (e.g. after systemd
+        # daemon-reload on host) cannot recover in-process. Schedule clean
+        # exit so docker `restart: unless-stopped` resurrects with a fresh
+        # nvidia hook. 2s delay lets this response return to the caller.
+        import threading
+        logger.error("[autoheal] NVML degraded — scheduling container exit")
+        threading.Timer(2.0, lambda: os._exit(1)).start()
     return {
         "status": "ok" if gpu_info["gpu_ok"] else "degraded",
         "pipeline": "aneurysm",
