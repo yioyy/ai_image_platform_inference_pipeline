@@ -70,8 +70,14 @@ def cmb_preprocess(
                         and not os.path.basename(f).startswith("synthseg_")]
             return filtered
 
-        swan_pre = _find_pre_computed(process_dir, "*SWAN*resample_synthseg33_1mm.nii.gz")
-        t1_pre_33 = _find_pre_computed(process_dir, "*T1*_resample_synthseg33_1mm.nii.gz")
+        # Accept both ws2030 _synthseg33_1mm and RAD main.py _synthseg33 naming.
+        # ws2030 task_pipeline post-processes _synthseg33 -> _synthseg33_1mm
+        # (resample to 1mm + rename via scripts/rename_synthseg_suffixes.sh);
+        # RAD main.py only produces the bare _synthseg33 form.
+        swan_pre = (_find_pre_computed(process_dir, "*SWAN*resample_synthseg33_1mm.nii.gz")
+                    or _find_pre_computed(process_dir, "*SWAN*resample_synthseg33.nii.gz"))
+        t1_pre_33 = (_find_pre_computed(process_dir, "*T1*_resample_synthseg33_1mm.nii.gz")
+                     or _find_pre_computed(process_dir, "*T1*_resample_synthseg33.nii.gz"))
         t1_pre_cmb = _find_pre_computed(process_dir, "*T1*_resample_CMB.nii.gz")
 
         if not (swan_pre and t1_pre_33 and t1_pre_cmb):
@@ -105,8 +111,10 @@ def cmb_preprocess(
                 return False
             logger.info("[SynthSeg] done in %.0fs", time.time() - t_ss)
 
-            swan_pre = _find_pre_computed(process_dir, "*SWAN*resample_synthseg33_1mm.nii.gz")
-            t1_pre_33 = _find_pre_computed(process_dir, "*T1*_resample_synthseg33_1mm.nii.gz")
+            swan_pre = (_find_pre_computed(process_dir, "*SWAN*resample_synthseg33_1mm.nii.gz")
+                        or _find_pre_computed(process_dir, "*SWAN*resample_synthseg33.nii.gz"))
+            t1_pre_33 = (_find_pre_computed(process_dir, "*T1*_resample_synthseg33_1mm.nii.gz")
+                         or _find_pre_computed(process_dir, "*T1*_resample_synthseg33.nii.gz"))
             t1_pre_cmb = _find_pre_computed(process_dir, "*T1*_resample_CMB.nii.gz")
             if not (swan_pre and t1_pre_33 and t1_pre_cmb):
                 logger.error("[SynthSeg] ran but expected outputs still missing in %s", process_dir)
