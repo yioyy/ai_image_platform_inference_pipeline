@@ -54,11 +54,14 @@ def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
             logger.warning("notify: missing study_uid or inference_id in %s", rdx_json_path)
             return
         import requests
+        # Backend schema InferenceSuccessRequest requires the literal `result: "success"`
+        # field — without it the POST returns HTTP 400 and the case stays "running".
         r = requests.post(
             url,
             json={
                 "studyInstanceUid": study_uid,
                 "modelName": model_name,
+                "result": "success",
                 "inferenceId": inference_id,
             },
             timeout=30,
