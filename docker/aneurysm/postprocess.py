@@ -107,38 +107,116 @@ def aneurysm_postprocess(
             v16_cnn = flip_to_cnn(np.asanyarray(v16_nii.dataobj), v16_nii)
         _generate_excel(pred_cnn, pred_nii, process_dir, path_nnunet, study_id, v16_cnn)
 
-        # ── 4. Platform JSON + DICOM-SEG ─────────────────────────────────
-        # Always generate — 0 lesion also needs study_model record in Laravel
-        # (old pipeline calls make_pred_json unconditionally)
+        # ── 4. RAD Platform JSON + DICOM-SEG via make_aneurysm_pred_json ──
+        # Replaces ws2030 execute_dicomseg_platform_json (incompatible schema).
+        # RAD wrappers write rdx_aneurysm_pred_json.json + rdx_vessel_dilated_json.json
+        # under nnUNet/, and DICOM-SEG files under nnUNet/Dicom/Dicom-Seg/.
         n_lesions = len(np.unique(pred_arr)) - 1  # exclude background
-        from code_ai.pipeline.dicomseg.aneurysm import execute_dicomseg_platform_json
-        execute_dicomseg_platform_json(_id=study_id, root_path=str(path_nnunet), group_id=group_id)
-        logger.info("Platform JSON + DICOM-SEG done (%d lesions)", n_lesions)
 
-        # ── 5. Deliver to Orthanc + Laravel ──────────────────────────────
-        from code_ai.pipeline.deliver import deliver_results
-        # dicomseg/aneurysm.py saves JSON as nnUNet/aneurysm_platform_json.json
-        json_file = os.path.join(path_nnunet, "aneurysm_platform_json.json")
-        # Also check legacy path
-        if not os.path.isfile(json_file):
-            json_file = os.path.join(path_json_out, f"{study_id}_platform_json.json")
-        delivery = deliver_results(
-            model_type="Aneurysm",
-            study_id=study_id,
-            platform_json_path=json_file if os.path.isfile(json_file) else "",
-            dicom_seg_dir=os.path.join(path_dcm, "Dicom-Seg"),
-            extra_orthanc_dirs=[
-                os.path.join(path_dcm, d)
-                for d in ["MRA_BRAIN", "MIP_Pitch", "MIP_Yaw"]
-                if os.path.isdir(os.path.join(path_dcm, d))
-            ],
-            group_id=group_id,
+        from code_ai.pipeline.dicomseg.build_aneurysm import main as make_aneurysm_pred_json
+        from code_ai.pipeline.dicomseg.build_vessel_dilated import main as make_vessel_pred_json
+        make_aneurysm_pred_json(study_id, pathlib.Path(path_nnunet), group_id)
+        make_vessel_pred_json(study_id, pathlib.Path(path_nnunet))
+        logger.info("RAD platform JSON + DICOM-SEG done (%d lesions)", n_lesions)
+
+        # ── 5. RAD upload to AI_INFERENCE_RESULT_PATH ──
+        # Replaces ws2030 deliver_results (Laravel API).
+        # Mirrors pipeline_aneurysm_tensorflow.py lines ~439-580 logic:
+        # writes ai-inference-result/<study_uid>/{aneurysm_model,vessel_model}/<infer_id>/
+        # RAD backend monitors this dir and handles Orthanc upload separately.
+        import json as _json
+
+        upload_dir = os.environ.get(
+            "RADX_UPLOAD_DIR",
+            os.environ.get("AI_INFERENCE_RESULT_PATH", "/home/david/ai-inference-result"),
         )
-        if not delivery.success:
-            logger.error("deliver failed: %s", delivery)
+        path_dicomseg_n = os.path.join(path_dcm, "Dicom-Seg")
+        aneurysm_json_file = os.path.join(path_nnunet, "rdx_aneurysm_pred_json.json")
+        vessel_json_file = os.path.join(path_nnunet, "rdx_vessel_dilated_json.json")
+
+        if not os.path.isfile(aneurysm_json_file):
+            logger.error("RAD JSON not found: %s", aneurysm_json_file)
             return False
-        if os.path.isfile(json_file):
-            shutil.copy(json_file, os.path.join(output_dir, "Pred_Aneurysm_platform_json.json"))
+
+        with open(aneurysm_json_file, "r", encoding="utf-8") as f:
+            aneurysm_data = _json.load(f)
+
+        study_instance_uid = (aneurysm_data.get("input_study_instance_uid") or [""])[0]
+        aneurysm_inference_id = str(aneurysm_data.get("inference_id") or "unknown")
+
+        study_dir = os.path.join(upload_dir, study_instance_uid)
+        aneurysm_model_root = os.path.join(study_dir, "aneurysm_model")
+        aneurysm_infer_dir = os.path.join(aneurysm_model_root, aneurysm_inference_id)
+        os.makedirs(aneurysm_infer_dir, exist_ok=True)
+        shutil.copy(aneurysm_json_file, os.path.join(aneurysm_infer_dir, "prediction.json"))
+
+        # MRA_BRAIN DICOM-SEG
+        for det in aneurysm_data.get("detections", []) or []:
+            label = str(det.get("label") or "")
+            seg_series_uid = str(det.get("series_instance_uid") or "")
+            if not label or not seg_series_uid:
+                continue
+            src = os.path.join(path_dicomseg_n, f"MRA_BRAIN_{label}.dcm")
+            if os.path.exists(src):
+                shutil.copy(src, os.path.join(aneurysm_infer_dir, f"{seg_series_uid}_{label}.dcm"))
+
+        # MIP Pitch/Yaw — series DICOM folder + DICOM-SEG flat
+        for series_item in aneurysm_data.get("reformatted_series", []) or []:
+            series_folder_uid = str(series_item.get("series_instance_uid") or "")
+            if not series_folder_uid:
+                continue
+            sd = str(series_item.get("series_description") or "").lower()
+            if sd == "mip_pitch":
+                src_prefix = "MIP_Pitch"
+            elif sd == "mip_yaw":
+                src_prefix = "MIP_Yaw"
+            else:
+                continue
+            series_dir = os.path.join(aneurysm_infer_dir, series_folder_uid)
+            os.makedirs(series_dir, exist_ok=True)
+            src_dicom_dir = os.path.join(path_nnunet, "Dicom", src_prefix)
+            if os.path.isdir(src_dicom_dir):
+                for fn in sorted(os.listdir(src_dicom_dir)):
+                    src_fp = os.path.join(src_dicom_dir, fn)
+                    if os.path.isfile(src_fp):
+                        shutil.copy(src_fp, os.path.join(series_dir, fn))
+            for det in series_item.get("detections", []) or []:
+                label = str(det.get("label") or "")
+                seg_series_uid = str(det.get("series_instance_uid") or "")
+                if not label or not seg_series_uid:
+                    continue
+                src = os.path.join(path_dicomseg_n, f"{src_prefix}_{label}.dcm")
+                if os.path.exists(src):
+                    shutil.copy(src, os.path.join(aneurysm_infer_dir, f"{seg_series_uid}_{label}.dcm"))
+
+        # Vessel model — Vessel JSON + single DICOM-SEG (MRA_BRAIN_Vessel_A1.dcm)
+        if os.path.isfile(vessel_json_file):
+            with open(vessel_json_file, "r", encoding="utf-8") as f:
+                vessel_data = _json.load(f)
+            vessel_inference_id = str(vessel_data.get("inference_id") or "unknown")
+            vessel_model_root = os.path.join(study_dir, "vessel_model")
+            vessel_infer_dir = os.path.join(vessel_model_root, vessel_inference_id)
+            os.makedirs(vessel_infer_dir, exist_ok=True)
+            shutil.copy(vessel_json_file, os.path.join(vessel_infer_dir, "prediction.json"))
+            vessel_src = os.path.join(path_dicomseg_n, "MRA_BRAIN_Vessel_A1.dcm")
+            try:
+                vessel_seg_uid = str(((vessel_data.get("detections") or [{}])[0]).get("series_instance_uid") or "")
+            except Exception:
+                vessel_seg_uid = ""
+            if os.path.exists(vessel_src) and vessel_seg_uid:
+                shutil.copy(vessel_src, os.path.join(vessel_infer_dir, f"{vessel_seg_uid}.dcm"))
+
+        # Copy RAD JSONs to output_dir (rename_nifti — for legacy consumers)
+        shutil.copy(
+            aneurysm_json_file,
+            os.path.join(output_dir, "Pred_Aneurysm_rdx_aneurysm_pred_json.json"),
+        )
+        if os.path.isfile(vessel_json_file):
+            shutil.copy(
+                vessel_json_file,
+                os.path.join(output_dir, "Pred_Vessel_dilated_rdx_vessel_dilated_pred_json.json"),
+            )
+        logger.info("RAD upload done -> %s", aneurysm_infer_dir)
 
         # ── 6. Followup — CP9 ────────────────────────────────────────────
         if input_json:
