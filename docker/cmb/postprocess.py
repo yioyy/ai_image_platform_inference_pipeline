@@ -23,6 +23,40 @@ import numpy as np
 logger = logging.getLogger("cmb.postprocess")
 
 
+def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
+    """POST inference completion to RAD backend (AI_APP_INFERENCE_COMPLETE).
+
+    Mirrors inline pipeline_*_tensorflow.py upload_inference_complete so the
+    platform flips the case from "running" to "done". Best-effort: failure is
+    logged but does not fail postprocess.
+    """
+    url = os.environ.get("AI_APP_INFERENCE_COMPLETE")
+    if not url:
+        logger.warning("AI_APP_INFERENCE_COMPLETE not set — skip platform notify")
+        return
+    try:
+        with open(rdx_json_path) as f:
+            data = json.load(f)
+        study_uid = (data.get("input_study_instance_uid") or [""])[0]
+        inference_id = str(data.get("inference_id") or "")
+        if not (study_uid and inference_id):
+            logger.warning("notify: missing study_uid or inference_id in %s", rdx_json_path)
+            return
+        import requests
+        r = requests.post(
+            url,
+            json={
+                "studyInstanceUid": study_uid,
+                "modelName": model_name,
+                "inferenceId": inference_id,
+            },
+            timeout=30,
+        )
+        logger.info("[notify] %s -> %s (%d)", model_name, url, r.status_code)
+    except Exception as exc:
+        logger.warning("[notify] %s failed: %s", model_name, exc)
+
+
 def cmb_postprocess(
     study_id: str,
     output_dir: str,
@@ -140,7 +174,10 @@ def cmb_postprocess(
             shutil.copy(dcm_file, os.path.join(target_dir, f"{series_uid}_{label}.dcm"))
         logger.info("RAD upload done -> %s", target_dir)
 
-        # ── 6. Followup — 未來實作 ────────────────────────────────────────
+        # ── 6. Notify RAD backend (inference complete) ───────────────────
+        _notify_platform_complete(rdx_json_path, "cmb_model")
+
+        # ── 7. Followup — 未來實作 ────────────────────────────────────────
         if input_json:
             logger.info("Followup skipped — future implementation")
 

@@ -32,6 +32,41 @@ from skimage.measure import regionprops_table
 
 logger = logging.getLogger("aneurysm.postprocess")
 
+
+def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
+    """POST inference completion to RAD backend (AI_APP_INFERENCE_COMPLETE).
+
+    Mirrors inline pipeline_*_tensorflow.py upload_inference_complete so the
+    platform flips the case from "running" to "done". Best-effort: failure is
+    logged but does not fail postprocess.
+    """
+    import json as _json
+    url = os.environ.get("AI_APP_INFERENCE_COMPLETE")
+    if not url:
+        logger.warning("AI_APP_INFERENCE_COMPLETE not set — skip platform notify")
+        return
+    try:
+        with open(rdx_json_path) as f:
+            data = _json.load(f)
+        study_uid = (data.get("input_study_instance_uid") or [""])[0]
+        inference_id = str(data.get("inference_id") or "")
+        if not (study_uid and inference_id):
+            logger.warning("notify: missing study_uid or inference_id in %s", rdx_json_path)
+            return
+        import requests
+        r = requests.post(
+            url,
+            json={
+                "studyInstanceUid": study_uid,
+                "modelName": model_name,
+                "inferenceId": inference_id,
+            },
+            timeout=30,
+        )
+        logger.info("[notify] %s -> %s (%d)", model_name, url, r.status_code)
+    except Exception as exc:
+        logger.warning("[notify] %s failed: %s", model_name, exc)
+
 # Vessel 16-label → vessel name mapping
 # Vessel 16-label → (location, sub_location) mapping
 # Exact copy from old pipeline util_aneurysm.py decode_location()
@@ -115,7 +150,10 @@ def aneurysm_postprocess(
 
         from code_ai.pipeline.dicomseg.build_aneurysm import main as make_aneurysm_pred_json
         from code_ai.pipeline.dicomseg.build_vessel_dilated import main as make_vessel_pred_json
-        make_aneurysm_pred_json(study_id, pathlib.Path(path_nnunet), group_id)
+        # NOTE: build_aneurysm.main 3rd arg is `model_id: str`, NOT group_id.
+        # Earlier we passed group_id (int 56) which wrote model_id:56 into the rdx
+        # JSON and broke backend validation. Use the default model_id UUID.
+        make_aneurysm_pred_json(study_id, pathlib.Path(path_nnunet))
         make_vessel_pred_json(study_id, pathlib.Path(path_nnunet))
         logger.info("RAD platform JSON + DICOM-SEG done (%d lesions)", n_lesions)
 
@@ -218,7 +256,15 @@ def aneurysm_postprocess(
             )
         logger.info("RAD upload done -> %s", aneurysm_infer_dir)
 
-        # ── 6. Followup — CP9 ────────────────────────────────────────────
+        # ── 6. Notify RAD backend (inference complete) ───────────────────
+        # Inline pipeline_aneurysm_tensorflow.py calls upload_inference_complete
+        # after rdx upload — container path must mirror it so the platform
+        # flips the case from "running" to "done". Only aneurysm_model is a
+        # valid modelName in the backend schema (no vessel_model); vessel rdx
+        # files are auxiliary artifacts kept under vessel_model/<infer_id>/.
+        _notify_platform_complete(aneurysm_json_file, "aneurysm_model")
+
+        # ── 7. Followup — CP9 ────────────────────────────────────────────
         if input_json:
             logger.info("Followup skipped — CP9")
 
