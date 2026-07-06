@@ -53,6 +53,68 @@ from mip_utils import reslice_nifti_pred_nobrain, decompress_dicom_with_gdcm, cr
 logger = logging.getLogger("aneurysm.inference")
 
 
+# ── Vessel16 warm state (Step 2 in-process refactor) ─────────────────────
+# 200MB model 常駐 GPU (per user spec: 太小不值得 CPU-swap),跨 case 復用。
+# In-process server.py 啟動時呼叫 warmup_vessel16() 一次;subprocess mode
+# fallback 到 aneurysm_inference 內 lazy 載入 (每 case 重載,同原行為)。
+_VESSEL16_STATE = None  # (kind, model_or_sess, device_or_input_name)
+
+
+def warmup_vessel16() -> None:
+    """Load vessel 16-label model to GPU (常駐, ~200MB VRAM)."""
+    global _VESSEL16_STATE
+    if _VESSEL16_STATE is not None:
+        return
+
+    onnx_dir = os.environ.get("VESSEL_16_ONNX_DIR", "/data/4TB/ai_pipeline/onnx_models/aneurysm")
+    pt_path = os.path.join(onnx_dir, "vessel_16label_resunet_traced.pt")
+    prefer = os.environ.get("VESSEL_16_BACKEND", "auto").lower()
+
+    if prefer in ("torch", "auto") and os.path.isfile(pt_path):
+        import torch
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        model = torch.jit.load(pt_path, map_location=device).eval()
+        _VESSEL16_STATE = ("torch", model, device)
+        logger.info("[vessel16] warmed to %s (PyTorch traced .pt)", device)
+    else:
+        import onnxruntime as ort
+        onnx_path = os.path.join(onnx_dir, "vessel_16label_resunet.onnx")
+        sess = ort.InferenceSession(onnx_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+        _VESSEL16_STATE = ("onnx", sess, sess.get_inputs()[0].name)
+        logger.info("[vessel16] warmed (ONNX Runtime CUDA)")
+
+
+def _get_vessel16_serve():
+    """Return an object with .serve(x) callable (bound to warm model)."""
+    if _VESSEL16_STATE is None:
+        warmup_vessel16()  # lazy: subprocess mode falls here
+    kind, model_or_sess, device_or_name = _VESSEL16_STATE
+
+    if kind == "torch":
+        import torch
+        _model = model_or_sess
+        _device = device_or_name
+        class TorchModelWrapper:
+            def serve(self, x):
+                class R:
+                    def __init__(s, v): s._v = v
+                    def numpy(s): return s._v
+                with torch.no_grad():
+                    out = _model(torch.from_numpy(np.asarray(x, dtype=np.float32)).to(_device))
+                return R(out.cpu().numpy())
+        return TorchModelWrapper()
+    else:
+        _sess = model_or_sess
+        _inp_name = device_or_name
+        class OnnxModelWrapper:
+            def serve(self, x):
+                class R:
+                    def __init__(s, v): s._v = v
+                    def numpy(s): return s._v
+                return R(_sess.run(None, {_inp_name: np.asarray(x, dtype=np.float32)})[0])
+        return OnnxModelWrapper()
+
+
 def _save_nii_brain(path_process: str, image_arr, out_dir: str):
     """Prepare nnUNet input for brain detection: Image + Ones mask."""
     for d in ["Image", "Ones"]:
@@ -161,50 +223,18 @@ def aneurysm_inference(
         os.remove(os.path.join(path_vessel_dir, "DeepAneurysm_00001.nii.gz"))
         logger.info("[B] done (%.0fs)", time.time() - t)
 
-        # ── Stage B2: Vessel 16-Label (ONNX) ────────────────────────────
+        # ── Stage B2: Vessel 16-Label ──────────────────────────────────
+        # In-process server 於啟動時已 warm 好 vessel16 model (常駐 GPU),
+        # subprocess mode 走 _get_vessel16_serve 的 lazy fallback (原行為)。
         t = time.time()
         v16, sp16, _ = load_volume(os.path.join(path_nnunet, "Vessel.nii.gz"), dtype="int16")
-
-        # AP-098 fix: Load Vessel 16-label model HERE (moved from top, was at Stage A 之前).
-        # Stage A/B 的 nnUNet predict_3d 已跑完 (內部 batchgenerators MTA fork worker
-        # 用乾淨 CUDA state),現在 init CUDA 不影響後續 Stage C 之前的處理。
-        # (Stage C 在 line ~191 也呼叫 predict_3d,fork-after-CUDA-init 風險仍存在但實測
-        # 沒踩到 — race timing 因素,後備方案 B 在 inference.py 頂加 set_start_method 待測。)
-        onnx_dir = os.environ.get("VESSEL_16_ONNX_DIR", "/data/4TB/ai_pipeline/onnx_models/aneurysm")
-        pt_path = os.path.join(onnx_dir, "vessel_16label_resunet_traced.pt")
-        if os.path.isfile(pt_path):
-            import torch
-            _v16_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-            _v16_model = torch.jit.load(pt_path, map_location=_v16_device).eval()
-            class TorchModel:
-                def serve(s, x):
-                    class R:
-                        def __init__(s, v): s._v = v
-                        def numpy(s): return s._v
-                    with torch.no_grad():
-                        out = _v16_model(torch.from_numpy(np.asarray(x, dtype=np.float32)).to(_v16_device))
-                    return R(out.cpu().numpy())
-            model3 = TorchModel()
-            logger.info("Vessel 16-label: PyTorch (%s)", _v16_device)
-        else:
-            import onnxruntime as ort
-            onnx_path = os.path.join(onnx_dir, "vessel_16label_resunet.onnx")
-            sess = ort.InferenceSession(onnx_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-            inp_name = sess.get_inputs()[0].name
-            class OnnxModel:
-                def __init__(s, sess, name): s._s, s._n = sess, name
-                def serve(s, x):
-                    class R:
-                        def __init__(s, v): s._v = v
-                        def numpy(s): return s._v
-                    return R(s._s.run(None, {s._n: np.asarray(x, dtype=np.float32)})[0])
-            model3 = OnnxModel(sess, inp_name)
-            logger.info("Vessel 16-label: ONNX")
+        model3 = _get_vessel16_serve()
 
         v16labels = predict_vessel_16labels(v16, model3, sp16, verbose=True)
         v16labels, v16 = modify_vessel_16labels(v16labels, sp16)
         _save_nii_vessel(process_dir, image_arr, v16, v16labels, out_dir=process_dir)
-        del model3; gc.collect()
+        # 不 del model3: 是 warm state 的 wrapper 引用,實際 model 常駐
+        gc.collect()
         logger.info("[B2] Vessel 16-label done (%.0fs)", time.time() - t)
 
         # ── Stage C: Aneurysm Detection ──────────────────────────────────
