@@ -81,3 +81,8 @@ Thumbs.db
 *.tmp
 *.log
 model_weights/
+
+# Phase A
+*.bak-*
+*.tar.gz
+*.tar
