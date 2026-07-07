@@ -48,7 +48,7 @@ from code_ai.inference.aneurysm_helpers import (
     filter_aneurysm,
 )
 from nifti_utils import flip_to_cnn, flip_to_native, nii_replace
-from mip_utils import reslice_nifti_pred_nobrain, decompress_dicom_with_gdcm, create_MIP_pred
+# Stage D (reslice/dcm2niix/MIP) 走 subprocess,不需要 in-process import mip_utils
 
 logger = logging.getLogger("aneurysm.inference")
 
@@ -257,46 +257,74 @@ def aneurysm_inference(
 
         elapsed_nnunet = time.time() - t_total
 
-        # ── Stage D: Reslice + MIP ───────────────────────────────────────
-        path_nii = os.path.join(path_nnunet, "Image_nii")
-        path_dcm = os.path.join(path_nnunet, "Dicom")
-        path_reslice = os.path.join(path_nnunet, "Image_reslice")
-        for d in [path_nii, path_dcm, path_reslice]:
-            os.makedirs(d, exist_ok=True)
-
-        for src, dest_dir, name in [
-            (os.path.join(path_nnunet, "Pred.nii.gz"), path_nii, "Pred.nii.gz"),
-            (os.path.join(process_dir, "Vessel.nii.gz"), path_nii, "Vessel.nii.gz"),
-            (os.path.join(process_dir, "Vessel_16.nii.gz"), path_nnunet, "Vessel_16.nii.gz"),
-        ]:
-            dest = os.path.join(dest_dir, name)
-            if os.path.isfile(src) and not os.path.isfile(dest):
-                shutil.copy(src, dest)
-
-        if dicom_dir and os.path.isdir(dicom_dir):
-            dcm_dest = os.path.join(path_dcm, "MRA_BRAIN")
-            if not os.path.isdir(dcm_dest):
-                shutil.copytree(dicom_dir, dcm_dest)
-
-        t = time.time()
-        reslice_nifti_pred_nobrain(path_nii, path_reslice)
-        logger.info("[D] Reslice done (%.0fs)", time.time() - t)
-
-        t = time.time()
-        decompress_dicom_with_gdcm(path_dcm)
-        logger.info("[D] DICOM decompress done (%.0fs)", time.time() - t)
-
-        t = time.time()
         if not code_dir:
             code_dir = os.environ.get("RADX_CODE_ROOT", "")
-        path_png = os.path.join(code_dir, "png") if code_dir else "/tmp/png"
-        create_MIP_pred(path_dcm, path_reslice, path_png, gpu_id)
-        logger.info("[D] MIP done (%.0fs)", time.time() - t)
 
-        for name in ["MIP_Pitch_pred.nii.gz", "MIP_Yaw_pred.nii.gz"]:
-            src = os.path.join(path_reslice, name)
-            if os.path.isfile(src):
-                shutil.copy(src, os.path.join(path_nnunet, name))
+        # ── Stage D: Reslice + MIP ───────────────────────────────────────
+        # NNUNET_MIP_SUBPROCESS=1 → 走獨立 subprocess (省 VRAM,適合 TRT mode)
+        # 預設 0 → in-process (原路徑,適合 warm mode; warm + subprocess 會 OOM)
+        _mip_subprocess = os.environ.get("NNUNET_MIP_SUBPROCESS", "0") == "1"
+
+        if _mip_subprocess:
+            # subprocess mode: exit 時 GPU 記憶體全還 driver
+            import subprocess
+            t_mip = time.time()
+            cmd = ["python", "/app/mip_stage.py",
+                   "--process_dir", process_dir,
+                   "--gpu_id", str(gpu_id),
+                   "--dicom_dir", dicom_dir]
+            if code_dir:
+                cmd += ["--code_dir", code_dir]
+            try:
+                result = subprocess.run(cmd, timeout=600)
+            except subprocess.TimeoutExpired:
+                logger.error("[D] MIP subprocess TIMEOUT after 600s")
+                return False
+            if result.returncode != 0:
+                logger.error("[D] MIP subprocess failed (rc=%d)", result.returncode)
+                return False
+            logger.info("[D] Stage D subprocess done (%.0fs)", time.time() - t_mip)
+        else:
+            # in-process mode (原本行為)
+            from mip_utils import reslice_nifti_pred_nobrain, decompress_dicom_with_gdcm, create_MIP_pred
+
+            path_nii = os.path.join(path_nnunet, "Image_nii")
+            path_dcm = os.path.join(path_nnunet, "Dicom")
+            path_reslice = os.path.join(path_nnunet, "Image_reslice")
+            for d in [path_nii, path_dcm, path_reslice]:
+                os.makedirs(d, exist_ok=True)
+
+            for src, dest_dir, name in [
+                (os.path.join(path_nnunet, "Pred.nii.gz"), path_nii, "Pred.nii.gz"),
+                (os.path.join(process_dir, "Vessel.nii.gz"), path_nii, "Vessel.nii.gz"),
+                (os.path.join(process_dir, "Vessel_16.nii.gz"), path_nnunet, "Vessel_16.nii.gz"),
+            ]:
+                dest = os.path.join(dest_dir, name)
+                if os.path.isfile(src) and not os.path.isfile(dest):
+                    shutil.copy(src, dest)
+
+            if dicom_dir and os.path.isdir(dicom_dir):
+                dcm_dest = os.path.join(path_dcm, "MRA_BRAIN")
+                if not os.path.isdir(dcm_dest):
+                    shutil.copytree(dicom_dir, dcm_dest)
+
+            t = time.time()
+            reslice_nifti_pred_nobrain(path_nii, path_reslice)
+            logger.info("[D] Reslice done (%.0fs)", time.time() - t)
+
+            t = time.time()
+            decompress_dicom_with_gdcm(path_dcm)
+            logger.info("[D] DICOM decompress done (%.0fs)", time.time() - t)
+
+            t = time.time()
+            path_png = os.path.join(code_dir, "png") if code_dir else "/tmp/png"
+            create_MIP_pred(path_dcm, path_reslice, path_png, gpu_id)
+            logger.info("[D] MIP done (%.0fs)", time.time() - t)
+
+            for name in ["MIP_Pitch_pred.nii.gz", "MIP_Yaw_pred.nii.gz"]:
+                src = os.path.join(path_reslice, name)
+                if os.path.isfile(src):
+                    shutil.copy(src, os.path.join(path_nnunet, name))
 
         total = time.time() - t_total
         logger.info("All done (%.0fs total: nnUNet=%.0fs, MIP=%.0fs)", total, elapsed_nnunet, total - elapsed_nnunet)
