@@ -31,6 +31,11 @@ MODEL1_PT = "cmb_model1_unet5_32_traced.pt"
 MODEL2_ONNX = "cmb_model2_resunet_fpn.onnx"
 MODEL2_PT = "cmb_model2_resunet_fpn_traced.pt"
 
+# TRT plans (env: CMB_BACKEND=trt selects; missing plan falls back to PT/ONNX)
+DEFAULT_TRT_PLAN_DIR = "/opt/trt_engines"
+MODEL1_TRT = "cmb_model1.plan"
+MODEL2_TRT = "cmb_model2.plan"
+
 # Detection parameters (must match training settings exactly)
 PATCH_SIZE = (64, 64, 64)
 OVERLAP = 0.5
@@ -93,7 +98,7 @@ def cmb_detect(
 
     # ── 2. Model1: sliding window detection ──────────────────────────
     logger.info("Model1: sliding window %s on volume %s", PATCH_SIZE, swan_norm.shape)
-    model1_fn = _load_model(model_dir, MODEL1_PT, MODEL1_ONNX)
+    model1_fn = _load_model(model_dir, MODEL1_PT, MODEL1_ONNX, MODEL1_TRT)
     prob_map = _sliding_window(swan_norm, model1_fn, PATCH_SIZE, OVERLAP, brain_mask) * brain_mask
     del model1_fn
     gc.collect()
@@ -108,7 +113,7 @@ def cmb_detect(
         return output_nii_path
 
     # ── 4. Model2: per-candidate FP filtering ────────────────────────
-    model2_fn = _load_model(model_dir, MODEL2_PT, MODEL2_ONNX)
+    model2_fn = _load_model(model_dir, MODEL2_PT, MODEL2_ONNX, MODEL2_TRT)
     regions = regionprops(labeled, prob_map)
     tp_confs = _score_candidates(regions, swan_norm, model2_fn)
     del model2_fn
@@ -140,10 +145,24 @@ def cmb_detect(
 
 # ── Model loading ─────────────────────────────────────────────────────────────
 
-def _load_model(model_dir, pt_name, onnx_name):
-    """Load PyTorch TorchScript (preferred) or ONNX model. Returns callable(batch_5d)."""
+def _load_model(model_dir, pt_name, onnx_name, trt_name=None):
+    """Load model in TRT (preferred) → PT → ONNX order. Returns callable(batch_5d)."""
+    backend = os.environ.get("CMB_BACKEND", "trt").lower()
+
+    if backend == "trt" and trt_name:
+        trt_dir = os.environ.get("CMB_TRT_PLAN_DIR", DEFAULT_TRT_PLAN_DIR)
+        trt_path = os.path.join(trt_dir, trt_name)
+        if os.path.isfile(trt_path):
+            try:
+                return _load_trt(trt_path)
+            except Exception as e:
+                logger.warning("TRT load failed for %s (%s); falling back to PT/ONNX",
+                               trt_path, e)
+        else:
+            logger.info("TRT plan %s not found; falling back to PT/ONNX", trt_path)
+
     pt_path = os.path.join(model_dir, pt_name)
-    if os.path.isfile(pt_path):
+    if backend != "onnx" and os.path.isfile(pt_path):
         import torch
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         model = torch.jit.load(pt_path, map_location=device).eval()
@@ -158,6 +177,67 @@ def _load_model(model_dir, pt_name, onnx_name):
     input_name = sess.get_inputs()[0].name
     def run(batch_5d):
         return sess.run(None, {input_name: batch_5d.astype(np.float32)})[0]
+    return run
+
+
+def _load_trt(plan_path):
+    """Load a TRT plan and return callable(batch_5d_np) -> numpy.
+
+    Chunks batches exceeding engine max profile automatically.
+    """
+    import tensorrt as trt
+    import torch
+
+    device = torch.device("cuda:0")
+    trt_logger = trt.Logger(trt.Logger.WARNING)
+    runtime = trt.Runtime(trt_logger)
+    with open(plan_path, "rb") as f:
+        engine = runtime.deserialize_cuda_engine(f.read())
+    if engine is None:
+        raise RuntimeError(f"failed to deserialize {plan_path}")
+    context = engine.create_execution_context()
+
+    input_name = None
+    output_name = None
+    max_batch = 1
+    for i in range(engine.num_io_tensors):
+        n = engine.get_tensor_name(i)
+        if engine.get_tensor_mode(n) == trt.TensorIOMode.INPUT:
+            input_name = n
+            max_batch = int(engine.get_tensor_profile_shape(n, 0)[2][0])
+        else:
+            output_name = n
+    if input_name is None or output_name is None:
+        raise RuntimeError(f"engine {plan_path} missing IO tensor")
+
+    logger.info("[trt] loaded %s (max_batch=%d)", os.path.basename(plan_path), max_batch)
+
+    # Keep engine + context bound to this closure via cell so they live as long
+    # as the returned callable does. Explicit `del run` from cmb_detect() then
+    # releases GPU memory before next model is loaded.
+    def _run_chunk(batch_5d_np):
+        x = torch.from_numpy(batch_5d_np).to(device=device, dtype=torch.float32).contiguous()
+        context.set_input_shape(input_name, tuple(x.shape))
+        out_shape = tuple(context.get_tensor_shape(output_name))
+        y = torch.empty(out_shape, dtype=torch.float32, device=device)
+        context.set_tensor_address(input_name, x.data_ptr())
+        context.set_tensor_address(output_name, y.data_ptr())
+        stream = torch.cuda.current_stream(device).cuda_stream
+        if not context.execute_async_v3(stream_handle=stream):
+            raise RuntimeError("TRT execute_async_v3 failed")
+        return y.cpu().numpy()
+
+    def run(batch_5d_np):
+        n = batch_5d_np.shape[0]
+        if n <= max_batch:
+            return _run_chunk(batch_5d_np)
+        outs = [_run_chunk(batch_5d_np[i:i + max_batch])
+                for i in range(0, n, max_batch)]
+        return np.concatenate(outs, axis=0)
+
+    # Anchor engine/context so they aren't collected before `run`.
+    run._engine = engine  # type: ignore[attr-defined]
+    run._context = context  # type: ignore[attr-defined]
     return run
 
 
