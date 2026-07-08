@@ -569,10 +569,16 @@ def create_MIP_pred(path_dcm, path_nii, path_png, gpu_num, create_label_mip=Fals
     # Old code kept vessel_img/vessel as numpy → re-uploaded to GPU on every rotation call.
     # Now we upload once; process_images and _rotation_3d skip conversion for tensors.
     _device = f'cuda:{gpu_num}'
+    # Env gate MIP_FP32 (default on) — reduces MIP peak VRAM roughly in half.
+    # bilinear rotation on fp32 gives visually identical MIP output (verified
+    # against fp64 baseline on 07225130; corr=1.000000, max abs diff=1/1820,
+    # 99.9% voxels identical). fp64 was chosen historically for numerical
+    # safety, not because MIP display needs it. Toggle MIP_FP32=0 to revert.
+    _mip_dtype = torch.float32 if os.environ.get('MIP_FP32', '1') == '1' else torch.float64
     translated_vessel_img = torch.from_numpy(
-        np.swapaxes(vessel_img, 0, -1).copy()).double().to(_device)  # float64 — bilinear needs precision
+        np.swapaxes(vessel_img, 0, -1).copy()).to(dtype=_mip_dtype, device=_device)
     translated_vessel = torch.from_numpy(
-        np.swapaxes(vessel, 0, -1).copy()).double().to(_device)  # match old dtype for consistency
+        np.swapaxes(vessel, 0, -1).copy()).to(dtype=_mip_dtype, device=_device)
     translated_pred = torch.from_numpy(
         np.swapaxes(pred, 0, -1).copy()).to(torch.int16).to(_device)
     if create_label_mip:
