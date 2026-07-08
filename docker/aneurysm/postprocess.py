@@ -262,10 +262,11 @@ def aneurysm_postprocess(
         # ── 6. Notify RAD backend (inference complete) ───────────────────
         # Inline pipeline_aneurysm_tensorflow.py calls upload_inference_complete
         # after rdx upload — container path must mirror it so the platform
-        # flips the case from "running" to "done". Only aneurysm_model is a
-        # valid modelName in the backend schema (no vessel_model); vessel rdx
-        # files are auxiliary artifacts kept under vessel_model/<infer_id>/.
+        # flips the case from "running" to "done". Backend schema accepts
+        # both aneurysm_model and vessel_model.
         _notify_platform_complete(aneurysm_json_file, "aneurysm_model")
+        if os.path.isfile(vessel_json_file):
+            _notify_platform_complete(vessel_json_file, "vessel_model")
 
         # ── 7. Followup — CP9 ────────────────────────────────────────────
         if input_json:
