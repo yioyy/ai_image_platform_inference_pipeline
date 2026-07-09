@@ -101,7 +101,7 @@ def reslice_nifti_pred_nobrain(path_nii, path_reslice):
 
     new_y_i = int(z_i * (pixdim_img[3] / pixdim_img[1]))
 
-    _fast_reslice = os.environ.get("MIP_RESLICE_FASTPATH", "1") == "1"
+    _fast_reslice = os.environ.get("MIP_RESLICE_FASTPATH", "0") == "1"
     _target_shape = (x_i, y_i, new_y_i)
     _target_spacing = (pixdim_img[1], pixdim_img[2], pixdim_img[1])
 
