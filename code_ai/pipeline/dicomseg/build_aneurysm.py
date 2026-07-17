@@ -89,6 +89,11 @@ def execute_rdx_platform_json(_id: int, path_root: pathlib.Path,
         except Exception:
             return default
 
+    def _clean_loc(v) -> str:
+        """Normalize aneurysm location: numpy nan (any case) -> ''."""
+        s = str(v or '')
+        return '' if s.lower() == 'nan' else s
+
     def _calculate_angle_from_pred(pred: np.ndarray, mask_index: int) -> int:
         """
         以 fake 3D 的方式計算 pitch/yaw angle：
@@ -196,7 +201,7 @@ def execute_rdx_platform_json(_id: int, path_root: pathlib.Path,
                 "sop_instance_uid": str(getattr(seg_ds, "SOPInstanceUID", "")),
                 "label": str(excel_row.get("mask_name") or f"A{mask_index}"),
                 "type": str(excel_row.get("type") or ""),
-                "location": str(excel_row.get("location") or ""),
+                "location": _clean_loc(excel_row.get("location")),
                 "diameter": _safe_float(excel_row.get("diameter")),
                 "main_seg_slice": _safe_int(excel_row.get("main_seg_slice")),
                 "probability": _safe_float(excel_row.get("prob_max")),
@@ -206,6 +211,8 @@ def execute_rdx_platform_json(_id: int, path_root: pathlib.Path,
                 "sub_location": str(excel_row.get("sub_location") or ""),
             }
         )
+
+    
 
     def _build_reformatted_series(
         series_name: str, series_description: str, pred: Optional[np.ndarray]
@@ -220,10 +227,12 @@ def execute_rdx_platform_json(_id: int, path_root: pathlib.Path,
         for d in detections:
             mask_index = int(d["mask_index"])
             seg_ds = seg_map.get(mask_index)
-            # 容錯策略（依需求）：
-            # - 若該 series 的 pred 缺檔（pred is None），輸出空字串
-            # - 若該病灶在該 pred 沒標註（computed == 0），輸出空字串
-            # - 否則輸出 computed 的整數
+            # Skip if no DICOM-SEG was generated for this lesion in this MIP view
+            # (mask projected off-slice or too small after fp16+xy=512 downsample
+            # for very large volumes). Emitting a detection with empty UIDs would
+            # fail platform's IsNotEmpty() validator -> HTTP 400.
+            if seg_ds is None:
+                continue
             main_seg_slice: Any = ""
             if pred is not None:
                 computed = _calculate_main_seg_slice_from_pred(pred, mask_index)
