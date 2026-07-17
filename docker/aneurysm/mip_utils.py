@@ -470,7 +470,7 @@ def _img_to_MIPdicom(dcm, img, tag, series, SE, angle, count, fixed_slice_thickn
 
 # ── Main MIP function (old util_aneurysm.py lines 449-855) ──────────────────
 
-def create_MIP_pred(path_dcm, path_nii, path_png, gpu_num, create_label_mip=False):
+def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mip=False, *, mip_dtype=None, downsample_xy=None):
     """Generate MIP projections for Aneurysm MRA visualization.
 
     Creates MIP_Pitch and MIP_Yaw DICOM series + NIfTI files:
@@ -574,7 +574,36 @@ def create_MIP_pred(path_dcm, path_nii, path_png, gpu_num, create_label_mip=Fals
     # against fp64 baseline on 07225130; corr=1.000000, max abs diff=1/1820,
     # 99.9% voxels identical). fp64 was chosen historically for numerical
     # safety, not because MIP display needs it. Toggle MIP_FP32=0 to revert.
-    _mip_dtype = torch.float32 if os.environ.get('MIP_FP32', '1') == '1' else torch.float64
+    if mip_dtype is None:
+        mip_dtype = torch.float32 if os.environ.get('MIP_FP32', '1') == '1' else torch.float64
+    _mip_dtype = mip_dtype
+
+    # Fallback for huge volumes: caller passes downsample_xy=512 (or similar) to
+    # reduce MIP peak VRAM. Only x,y axes are resampled; z untouched (MIP is
+    # projection along z-related axes, keep resolution there). Original MRA_BRAIN
+    # axial DICOM is written elsewhere -- not affected. MIP output DICOM will
+    # be at target xy resolution; overlay alignment preserved because pred/vessel
+    # are resampled with same zoom factor. See discussion 2026-07-17.
+    if downsample_xy is not None and (vessel_img.shape[0] > downsample_xy or vessel_img.shape[1] > downsample_xy):
+        from scipy.ndimage import zoom as _zoom
+        _yo, _xo = vessel_img.shape[0], vessel_img.shape[1]
+        _zf_y = downsample_xy / _yo
+        _zf_x = downsample_xy / _xo
+        logger.info('[MIP] downsample_xy=%d: (%d,%d,%d) -> (%d,%d,%d)',
+                    downsample_xy, _yo, _xo, vessel_img.shape[2],
+                    downsample_xy, downsample_xy, vessel_img.shape[2])
+        vessel_img = _zoom(vessel_img.astype(np.float32),
+                           (_zf_y, _zf_x, 1), order=1, prefilter=False)
+        vessel = _zoom(vessel.astype(np.int16),
+                       (_zf_y, _zf_x, 1), order=0, prefilter=False)
+        pred = _zoom(pred.astype(np.int16),
+                     (_zf_y, _zf_x, 1), order=0, prefilter=False)
+        if create_label_mip:
+            label = _zoom(label.astype(np.int16),
+                          (_zf_y, _zf_x, 1), order=0, prefilter=False)
+        # Update y_i, x_i so downstream MIP output canvas uses new size
+        y_i, x_i = downsample_xy, downsample_xy
+
     translated_vessel_img = torch.from_numpy(
         np.swapaxes(vessel_img, 0, -1).copy()).to(dtype=_mip_dtype, device=_device)
     translated_vessel = torch.from_numpy(
@@ -917,3 +946,38 @@ def create_MIP_pred(path_dcm, path_nii, path_png, gpu_num, create_label_mip=Fals
     torch.cuda.empty_cache()
 
     logger.info("MIP done: %.0fs total", time.time() - start)
+
+
+def create_MIP_pred(path_dcm, path_nii, path_png, gpu_num, create_label_mip=False):
+    """Public entry: try env-default MIP dtype first, on CUDA OOM fall back to fp16.
+
+    For very large TOF volumes (e.g. 800x900x800 Siemens Verio 3D-TOF multi-slab
+    from 2014-2015) the fp32 pathway can OOM on 3090 24 GB (single rotation
+    tensor 4.7 GB, 4 tensors + grid_sample output > 23 GB). fp16 halves that.
+    Verified same visual quality on typical volumes but slightly noisier at
+    boundaries -- acceptable for MIP display.
+    """
+    _env_dtype = torch.float32 if os.environ.get('MIP_FP32', '1') == '1' else torch.float64
+    # attempts: (dtype, downsample_xy). Ordered from best-quality to most aggressive
+    # memory reduction. Native res first; fp16 + xy=512 fallback for huge volumes
+    # (e.g. Siemens Verio 3D-TOF multi-slab from 2014-2015 with 800+^3 voxels).
+    attempts = [(_env_dtype, None), (torch.float16, 512)]
+    for i, (dtype, downsample) in enumerate(attempts):
+        try:
+            return _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num,
+                                        create_label_mip=create_label_mip,
+                                        mip_dtype=dtype,
+                                        downsample_xy=downsample)
+        except torch.cuda.OutOfMemoryError as e:
+            is_last = i == len(attempts) - 1
+            if is_last:
+                logger.error('[MIP] all fallbacks exhausted (last: dtype=%s downsample=%s); '
+                             'giving up. %s', dtype, downsample, e)
+                raise
+            logger.warning('[MIP] OOM with dtype=%s downsample_xy=%s (attempt %d/%d), '
+                           'retrying with next: %s', dtype, downsample,
+                           i + 1, len(attempts), e)
+            torch.cuda.empty_cache()
+            import gc; gc.collect()
+            torch.cuda.empty_cache()
+
