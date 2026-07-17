@@ -159,6 +159,98 @@ def _save_nii_vessel(path_process: str, image_arr, vessel_mask, vessel_16labels,
              os.path.join(out_dir, "Vessel_16.nii.gz"))
 
 
+
+# --- Stage A helper: keep only largest connected component of brain mask ---
+# Wide-FOV TOF (e.g. 台大) sometimes has brain seg outputting stray blobs
+# (neck / eye socket / cavernous sinus) as separate CCs. Keep only the
+# largest so downstream vessel-gate + aneurysm filter stay clean.
+# Env: ANEURYSM_BRAIN_LARGEST_CC=1 (default 1), set 0 to skip.
+def _keep_largest_cc(mask):
+    from scipy.ndimage import label
+    m = (mask > 0).astype("uint8")
+    labeled, n = label(m)
+    if n <= 1:
+        return mask, {"n_components": int(n), "kept_size": int(m.sum()),
+                      "dropped_size": 0}
+    sizes = np.bincount(labeled.ravel())
+    sizes[0] = 0
+    biggest = int(sizes.argmax())
+    kept = (labeled == biggest)
+    total = int(m.sum())
+    kept_size = int(kept.sum())
+    cleaned = np.where(kept, mask, 0).astype(mask.dtype)
+    return cleaned, {"n_components": int(n),
+                     "kept_size": kept_size,
+                     "dropped_size": total - kept_size}
+
+
+# --- Stage C.5 helper: SynthSeg call + neck-region z-filter ---
+# Cross-institution TOF cases (2014-2019 Siemens Verio 3D-TOF multi-slab)
+# with cervical FOV extension confuse the aneurysm model outside its
+# training distribution (雙和 train set has no neck coverage). Use
+# SynthSeg to determine actual brain bottom in z, discard lesions whose
+# lowest voxel sits below brain_z_min + margin.
+# Env:
+#   ANEURYSM_SYNTHSEG_ENABLED=1        default 1 (0 to skip entirely)
+#   SYNTHSEG_URL=http://127.0.0.1:5005 same host network as inference_aneurysm
+#   ANEURYSM_BRAIN_Z_MARGIN=5          slices above brain bottom edge
+def _call_synthseg(process_dir, study_id, url, timeout=300.0):
+    import json as _json
+    from urllib.request import Request, urlopen
+    out_dir = os.path.join(process_dir, "synthseg")
+    os.makedirs(out_dir, exist_ok=True)
+    payload = {
+        "input_path": os.path.join(process_dir, "MRA_BRAIN.nii.gz"),
+        "output_dir": out_dir,
+        "study_id": study_id,
+        "run_parcellation": True,
+        "force": False,
+    }
+    req = Request(f"{url}/predict",
+                  data=_json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"})
+    with urlopen(req, timeout=timeout) as resp:
+        body = _json.loads(resp.read().decode("utf-8"))
+    if body.get("status") != "ok":
+        raise RuntimeError(
+            f"synthseg status={body.get('status')} err={body.get('error_msg')}")
+    return body.get("output_paths", {})
+
+
+def _apply_neck_filter(process_dir, synthseg_native_path, z_margin):
+    path_nnunet = os.path.join(process_dir, "nnUNet")
+    pred_path = os.path.join(path_nnunet, "Pred.nii.gz")
+    if not os.path.isfile(pred_path) or not os.path.isfile(synthseg_native_path):
+        return {"dropped": [], "kept": [], "reason": "inputs missing"}
+    syn_arr = np.asarray(nib.load(synthseg_native_path).dataobj)
+    syn_z = np.where((syn_arr > 0).sum(axis=(0, 1)) > 0)[0]
+    if len(syn_z) == 0:
+        return {"dropped": [], "kept": [], "reason": "synthseg empty"}
+    brain_z_min = int(syn_z.min())
+    cutoff = brain_z_min + int(z_margin)
+    pred_img = nib.load(pred_path)
+    pred_arr = np.array(pred_img.dataobj)
+    dropped, kept = [], []
+    for lab in np.unique(pred_arr):
+        if lab == 0:
+            continue
+        zs = np.where(pred_arr == lab)[2]
+        if len(zs) == 0:
+            continue
+        if int(zs.min()) < cutoff:
+            dropped.append(int(lab))
+        else:
+            kept.append(int(lab))
+    if dropped:
+        for lab in dropped:
+            pred_arr[pred_arr == lab] = 0
+        out = nib.Nifti1Image(pred_arr.astype(pred_img.get_data_dtype()),
+                              pred_img.affine, pred_img.header)
+        nib.save(out, pred_path)
+    return {"dropped": dropped, "kept": kept,
+            "brain_z_min": brain_z_min, "cutoff": cutoff}
+
+
 def aneurysm_inference(
     process_dir: str,
     brain_model: str,
@@ -197,6 +289,18 @@ def aneurysm_inference(
         prob_nii = nib.load(os.path.join(path_brain, "DeepAneurysm_00001.nii.gz"))
         prob = flip_to_cnn(np.array(prob_nii.dataobj), prob_nii, qfac_both=True)
         brain_mask = flip_to_native((prob > 0.1).astype(int), prob_nii).astype(int)
+        # Keep only the largest connected component. Stray blobs in wide-FOV
+        # TOF (e.g. 台大 with neck coverage) can appear as separate CCs and
+        # contaminate downstream vessel-gate + aneurysm neck-filter.
+        # Toggle: ANEURYSM_BRAIN_LARGEST_CC=0
+        if os.environ.get("ANEURYSM_BRAIN_LARGEST_CC", "1") == "1":
+            brain_mask, _cc_stat = _keep_largest_cc(brain_mask)
+            if _cc_stat["n_components"] > 1:
+                logger.info(
+                    "[A] largest-CC: n_components=%d kept=%d dropped=%d voxels",
+                    _cc_stat["n_components"],
+                    _cc_stat["kept_size"],
+                    _cc_stat["dropped_size"])
         nib.save(nii_replace(prob_nii, brain_mask), os.path.join(path_brain, "DeepAneurysm_00001_0000.nii.gz"))
         shutil.copy(os.path.join(path_brain, "DeepAneurysm_00001_0000.nii.gz"),
                     os.path.join(path_nnunet, "brain_mask.nii.gz"))
@@ -254,6 +358,36 @@ def aneurysm_inference(
         pred_label = flip_to_native(pred_label, prob_nii).astype(int)
         nib.save(nii_replace(prob_nii, pred_label), os.path.join(path_nnunet, "Pred.nii.gz"))
         logger.info("[C] done (%.0fs)", time.time() - t)
+
+        # --- Stage C.5: SynthSeg + neck filter ---
+        # Cross-institution TOF cases (e.g. 台大 wide-FOV) with cervical
+        # extension confuse the aneurysm model outside training distribution.
+        # Filter using SynthSeg-determined brain bottom.
+        if os.environ.get("ANEURYSM_SYNTHSEG_ENABLED", "1") == "1":
+            t_syn = time.time()
+            _syn_url = os.environ.get("SYNTHSEG_URL", "http://127.0.0.1:5005")
+            _z_margin = int(os.environ.get("ANEURYSM_BRAIN_Z_MARGIN", "5"))
+            try:
+                _paths = _call_synthseg(process_dir,
+                                        os.path.basename(process_dir),
+                                        _syn_url)
+                _native = _paths.get("synthseg33_native")
+                if _native:
+                    _dst = os.path.join(path_nnunet, "SynthSEG.nii.gz")
+                    if not os.path.exists(_dst):
+                        shutil.copy(_native, _dst)
+                    _stat = _apply_neck_filter(process_dir, _native, _z_margin)
+                    logger.info(
+                        "[C.5] synthseg+neck-filter done (%.0fs) brain_z_min=%s cutoff=%s dropped=%s kept=%s",
+                        time.time() - t_syn,
+                        _stat.get("brain_z_min"),
+                        _stat.get("cutoff"),
+                        _stat.get("dropped"),
+                        _stat.get("kept"))
+                else:
+                    logger.warning("[C.5] synthseg returned no native output; skip filter")
+            except Exception as _exc:
+                logger.warning("[C.5] synthseg/neck-filter failed (non-fatal, keep original Pred): %s", _exc)
 
         elapsed_nnunet = time.time() - t_total
 
