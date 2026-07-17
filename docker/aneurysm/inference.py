@@ -217,38 +217,91 @@ def _call_synthseg(process_dir, study_id, url, timeout=300.0):
     return body.get("output_paths", {})
 
 
+def _resolve_si_axis(affine):
+    """Return (voxel_axis, sign) where voxel_axis is the array axis (0/1/2)
+    corresponding to S/I direction, and sign is +1 if voxel_axis+1 points to
+    Superior, -1 if it points to Inferior. Determined from the NIfTI affine.
+    """
+    ornt = nib.orientations.io_orientation(affine)
+    # ornt is (3, 2); row i = [ras_axis, sign] for voxel axis i.
+    # We want the voxel axis whose ras_axis == 2 (S/I).
+    for voxel_axis, (ras_axis, sign) in enumerate(ornt):
+        if int(ras_axis) == 2:
+            return voxel_axis, int(sign)
+    raise RuntimeError("cannot resolve S/I axis from affine")
+
+
 def _apply_neck_filter(process_dir, synthseg_native_path, z_margin):
+    """Drop Pred.nii.gz lesions sitting at/below the SynthSeg-defined brain
+    bottom (+ z_margin slices). Orientation-aware: uses the affine to
+    determine which voxel axis is S/I and which end is inferior. Discards
+    lesions whose minimum coordinate along the inferior direction sits within
+    z_margin of the brain edge on that side.
+    """
     path_nnunet = os.path.join(process_dir, "nnUNet")
     pred_path = os.path.join(path_nnunet, "Pred.nii.gz")
     if not os.path.isfile(pred_path) or not os.path.isfile(synthseg_native_path):
         return {"dropped": [], "kept": [], "reason": "inputs missing"}
-    syn_arr = np.asarray(nib.load(synthseg_native_path).dataobj)
-    syn_z = np.where((syn_arr > 0).sum(axis=(0, 1)) > 0)[0]
-    if len(syn_z) == 0:
-        return {"dropped": [], "kept": [], "reason": "synthseg empty"}
-    brain_z_min = int(syn_z.min())
-    cutoff = brain_z_min + int(z_margin)
+
     pred_img = nib.load(pred_path)
     pred_arr = np.array(pred_img.dataobj)
+    syn_img = nib.load(synthseg_native_path)
+    syn_arr = np.asarray(syn_img.dataobj)
+
+    # Resolve S/I axis. Trust pred affine (it should match synthseg since
+    # synthseg was run on the same MRA_BRAIN volume with same header).
+    si_axis, si_sign = _resolve_si_axis(pred_img.affine)
+
+    # Reduce synthseg to a 1-D presence array along si_axis (True where any
+    # brain label present at that slice).
+    other = tuple(a for a in (0, 1, 2) if a != si_axis)
+    syn_slice_has_brain = (syn_arr > 0).sum(axis=other) > 0
+    syn_idx = np.where(syn_slice_has_brain)[0]
+    if len(syn_idx) == 0:
+        return {"dropped": [], "kept": [], "reason": "synthseg empty"}
+
+    margin = int(z_margin)
+    if si_sign > 0:
+        # voxel_axis+1 -> Superior. Inferior end = index 0 side.
+        # brain bottom (inferior extent) = min index of syn presence.
+        brain_edge = int(syn_idx.min())
+        cutoff = brain_edge + margin
+        # discard rule: lesion has any voxel at index < cutoff
+        def drop(lesion_idx_along_si):
+            return int(lesion_idx_along_si.min()) < cutoff
+        direction = "index0=inferior (voxel_axis+1=S)"
+    else:
+        # voxel_axis+1 -> Inferior. Inferior end = max index side.
+        # brain bottom (inferior extent) = max index of syn presence.
+        brain_edge = int(syn_idx.max())
+        cutoff = brain_edge - margin
+        # discard rule: lesion has any voxel at index > cutoff
+        def drop(lesion_idx_along_si):
+            return int(lesion_idx_along_si.max()) > cutoff
+        direction = "indexN-1=inferior (voxel_axis+1=I)"
+
     dropped, kept = [], []
     for lab in np.unique(pred_arr):
         if lab == 0:
             continue
-        zs = np.where(pred_arr == lab)[2]
-        if len(zs) == 0:
+        loc = np.where(pred_arr == lab)
+        if len(loc[si_axis]) == 0:
             continue
-        if int(zs.min()) < cutoff:
+        if drop(loc[si_axis]):
             dropped.append(int(lab))
         else:
             kept.append(int(lab))
+
     if dropped:
         for lab in dropped:
             pred_arr[pred_arr == lab] = 0
         out = nib.Nifti1Image(pred_arr.astype(pred_img.get_data_dtype()),
                               pred_img.affine, pred_img.header)
         nib.save(out, pred_path)
+
     return {"dropped": dropped, "kept": kept,
-            "brain_z_min": brain_z_min, "cutoff": cutoff}
+            "brain_edge": brain_edge, "cutoff": cutoff,
+            "si_axis": si_axis, "direction": direction}
 
 
 def aneurysm_inference(
@@ -378,9 +431,11 @@ def aneurysm_inference(
                         shutil.copy(_native, _dst)
                     _stat = _apply_neck_filter(process_dir, _native, _z_margin)
                     logger.info(
-                        "[C.5] synthseg+neck-filter done (%.0fs) brain_z_min=%s cutoff=%s dropped=%s kept=%s",
+                        "[C.5] synthseg+neck-filter done (%.0fs) si_axis=%s dir=%s brain_edge=%s cutoff=%s dropped=%s kept=%s",
                         time.time() - t_syn,
-                        _stat.get("brain_z_min"),
+                        _stat.get("si_axis"),
+                        _stat.get("direction"),
+                        _stat.get("brain_edge"),
                         _stat.get("cutoff"),
                         _stat.get("dropped"),
                         _stat.get("kept"))
