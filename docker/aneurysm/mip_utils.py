@@ -544,26 +544,18 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
     reader = sitk.ImageSeriesReader()
     dcms_tofmra = reader.GetGDCMSeriesFileNames(path_dcms)
 
-    if len(dcms_tofmra) >= 2:
-        dcm0 = pydicom.dcmread(dcms_tofmra[0])
-        dcm1 = pydicom.dcmread(dcms_tofmra[1])
-        pos0 = np.array(dcm0.ImagePositionPatient)
-        pos1 = np.array(dcm1.ImagePositionPatient)
-        calculated_spacing = float(np.linalg.norm(pos1 - pos0))
-        print(f"From Image Position calculated slice spacing: {calculated_spacing:.4f} mm")
-    else:
-        dcm0 = pydicom.dcmread(dcms_tofmra[0])
-        if hasattr(dcm0, 'SliceThickness') and dcm0.SliceThickness:
-            calculated_spacing = float(dcm0.SliceThickness)
-            print(f"From SliceThickness tag: {calculated_spacing:.4f} mm")
-        elif hasattr(dcm0, 'SpacingBetweenSlices') and dcm0.SpacingBetweenSlices:
-            calculated_spacing = float(dcm0.SpacingBetweenSlices)
-            print(f"From SpacingBetweenSlices tag: {calculated_spacing:.4f} mm")
-        else:
-            calculated_spacing = float(np.mean(dcm0.PixelSpacing))
-            print(f"From PixelSpacing mean: {calculated_spacing:.4f} mm")
-
-    print(f"MIP using unified slice_thickness: {calculated_spacing:.4f} mm")
+    # MIP is a rotational sweep - each "slice" k is a 2D projection at rotation
+    # angle k, not a physical z-slice. If we inherit source TOF SliceThickness
+    # (typically 1.0 mm while xy ~ 0.3 mm) into the MIP DICOM output, viewers
+    # display the MIP series with anisotropic aspect and lesions appear
+    # stretched along the sweep axis. reslice_nifti_pred_nobrain already makes
+    # the pre-MIP volume isotropic to xy spacing, so we use xy PixelSpacing as
+    # the MIP slice_thickness -> platform viewer renders correct aspect ratio.
+    # (2026-07-30 fix)
+    dcm0 = pydicom.dcmread(dcms_tofmra[0])
+    calculated_spacing = float(dcm0.PixelSpacing[0])
+    print(f"MIP using isotropic slice_thickness (=XY PixelSpacing): "
+          f"{calculated_spacing:.4f} mm")
 
     # ── Swap axes + upload to GPU ONCE (optimization: eliminates ~148 GB CPU↔GPU transfer)
     # Old code kept vessel_img/vessel as numpy → re-uploaded to GPU on every rotation call.
