@@ -241,11 +241,28 @@ def aneurysm_postprocess(
             shutil.copy(vessel_json_file, os.path.join(vessel_infer_dir, "prediction.json"))
             vessel_src = os.path.join(path_dicomseg_n, "MRA_BRAIN_Vessel_A1.dcm")
             try:
-                vessel_seg_uid = str(((vessel_data.get("detections") or [{}])[0]).get("series_instance_uid") or "")
+                _vessel_det = (vessel_data.get("detections") or [{}])[0]
+                vessel_seg_uid = str(_vessel_det.get("series_instance_uid") or "")
+                vessel_label = str(_vessel_det.get("label") or "")
             except Exception:
                 vessel_seg_uid = ""
-            if os.path.exists(vessel_src) and vessel_seg_uid:
-                shutil.copy(vessel_src, os.path.join(vessel_infer_dir, f"{vessel_seg_uid}.dcm"))
+                vessel_label = ""
+            if os.path.exists(vessel_src) and vessel_seg_uid and vessel_label:
+                # '<uid>_<label>.dcm' — seg-naming.md rule 1. The underscore is
+                # not decoration: since RADAX-615 the platform pairs SEGs with
+                # startsWith(uid + "_"), so a bare '<uid>.dcm' is skipped, and
+                # skipped silently — the finding imports with no mask behind it.
+                shutil.copy(
+                    vessel_src,
+                    os.path.join(vessel_infer_dir, f"{vessel_seg_uid}_{vessel_label}.dcm"),
+                )
+            elif os.path.exists(vessel_src):
+                logger.error(
+                    "vessel SEG not delivered: series_instance_uid=%r label=%r — "
+                    "both are required to name the file, and a missing name means "
+                    "the platform shows a finding with no mask",
+                    vessel_seg_uid, vessel_label,
+                )
 
         # Copy RAD JSONs to output_dir (rename_nifti — for legacy consumers)
         shutil.copy(
