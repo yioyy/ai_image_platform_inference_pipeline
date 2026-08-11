@@ -23,6 +23,9 @@ if multiprocessing.get_start_method(allow_none=True) != "spawn":
     multiprocessing.set_start_method("spawn", force=True)
 # ─────────────────────────────────────────────────────────────────────────
 
+import contextlib
+import faulthandler
+import json
 import logging
 import os
 import pathlib
@@ -97,6 +100,80 @@ from code_ai.inference.nnunet_predict import warmup as warmup_nnunet
 # 上游 bp_worker Redis rad_gpu_0 lock 已 serialize,但 container 內加一把
 # threading.Lock 是 belt-and-suspenders (防上游 lock 失效 / batch retry race)
 _GPU_LOCK = threading.Lock()
+
+# ── Phase watchdog ────────────────────────────────────────────────────────
+# A normal study is ~2.5 min end to end; the slowest observed full run was 429s
+# and that included a 300s stall. 15 minutes is far outside anything healthy
+# while still leaving room for an unusually large volume. Set 0 to disable.
+PHASE_TIMEOUT_S = int(os.environ.get("ANEURYSM_PHASE_TIMEOUT_S", "900"))
+# On a bind mount, so the host-side notifier can see what the container left.
+# AI_INFERENCE_RESULT_PATH is set explicitly in compose and is a bind mount, so
+# the host-side notifier can read what lands here. Deriving it from ~ instead
+# would depend on HOME inside a runuser shell, and a marker written somewhere
+# unmounted is a marker nobody ever sees.
+STUCK_DIR = os.environ.get(
+    "ANEURYSM_STUCK_DIR",
+    os.path.join(os.environ.get("AI_INFERENCE_RESULT_PATH",
+                                "/home/david/ai-inference-result"), "_stuck"))
+EXIT_STUCK = 87
+
+
+@contextlib.contextmanager
+def phase_watchdog(phase: str, study_id: str):
+    """Kill the process if `phase` outlives PHASE_TIMEOUT_S, loudly.
+
+    The timer thread is a daemon and does nothing at all on the normal path, so
+    the cost of this is one thread per request and no wakeups.
+    """
+    if PHASE_TIMEOUT_S <= 0:
+        yield
+        return
+
+    finished = threading.Event()
+    started = time.time()
+
+    def _fire():
+        if finished.wait(PHASE_TIMEOUT_S):
+            return  # normal completion
+        elapsed = time.time() - started
+        stamp = time.strftime("%Y%m%dT%H%M%S")
+        try:
+            os.makedirs(STUCK_DIR, exist_ok=True)
+            trace_path = os.path.join(STUCK_DIR, f"{stamp}_{study_id}_{phase}.stacks.txt")
+            with open(trace_path, "w") as fh:
+                fh.write(f"study={study_id} phase={phase} elapsed={elapsed:.0f}s\n\n")
+                # Every thread, not just the stuck one — the stack that matters
+                # may be a worker, and there is no second chance to collect it.
+                faulthandler.dump_traceback(file=fh, all_threads=True)
+            with open(os.path.join(STUCK_DIR, f"{stamp}_{study_id}_{phase}.json"), "w") as fh:
+                json.dump({
+                    "study_id": study_id,
+                    "phase": phase,
+                    "elapsed_s": round(elapsed),
+                    "timeout_s": PHASE_TIMEOUT_S,
+                    "stacks": trace_path,
+                    "when": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "action": "os._exit(%d); container restart policy recovers" % EXIT_STUCK,
+                }, fh, indent=2)
+        except Exception:
+            logger.exception("[watchdog] failed to record state; exiting anyway")
+
+        logger.error(
+            "[watchdog] study=%s phase=%s exceeded %ds (elapsed %.0fs) — "
+            "dumping stacks to %s and exiting %d so the container restarts clean",
+            study_id, phase, PHASE_TIMEOUT_S, elapsed, STUCK_DIR, EXIT_STUCK,
+        )
+        # Also to stderr: if the log handler is what is wedged, this still lands.
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        sys.stderr.flush()
+        os._exit(EXIT_STUCK)
+
+    t = threading.Thread(target=_fire, name=f"watchdog-{phase}", daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        finished.set()
 
 
 app = FastAPI(title="Aneurysm In-Process Inference Server")
@@ -176,7 +253,9 @@ def _run_inference(req: PredictRequest, start: float) -> PredictResponse:
 
     logger.info("[aneurysm] inference start (GPU %d) [in-process]", req.gpu_id)
     try:
-        with _GPU_LOCK:
+        # Watchdog inside the lock, so the clock covers only real work and not
+        # time spent queued behind another request.
+        with _GPU_LOCK, phase_watchdog("inference", req.study_id):
             ok = aneurysm_inference(
                 process_dir,
                 PATH_BRAIN_MODEL,
