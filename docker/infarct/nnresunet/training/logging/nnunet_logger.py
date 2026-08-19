@@ -1,0 +1,256 @@
+import matplotlib
+from batchgenerators.utilities.file_and_folder_operations import join
+
+matplotlib.use('agg')
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+
+class nnUNetLogger(object):
+    """
+    This class is really trivial. Don't expect cool functionality here. This is my makeshift solution to problems
+    arising from out-of-sync epoch numbers and numbers of logged loss values. It also simplifies the trainer class a
+    little
+
+    YOU MUST LOG EXACTLY ONE VALUE PER EPOCH FOR EACH OF THE LOGGING ITEMS! DONT FUCK IT UP
+    """
+    def __init__(self, verbose: bool = False, num_deep_supervision_levels: int = 4, has_cls_head: bool = True):
+        self.verbose = verbose
+        self.num_deep_supervision_levels = num_deep_supervision_levels
+        self.has_cls_head = has_cls_head
+
+        # Base logging items
+        self.my_fantastic_logging = {
+            'mean_fg_dice': list(),
+            'ema_fg_dice': list(),
+            'dice_per_class_or_region': list(),
+            'train_losses': list(),
+            'train_seg_losses': list(),
+            'train_ce_losses': list(),
+            'train_dice_losses': list(),
+            'train_mean_fg_dice': list(),
+            'train_ema_fg_dice': list(),
+            'train_fake_dice_losses': list(),
+            'train_dice_per_class_or_region': list(),
+            'val_seg_losses': list(),
+            'val_ce_losses': list(),
+            'val_dice_losses': list(),
+            'val_losses': list(),
+            'val_fake_dice_losses': list(),
+            'lrs': list(),
+            'epoch_start_timestamps': list(),
+            'epoch_end_timestamps': list(),
+            # EMA model validation metrics
+            'ema_val_losses': list(),
+            'ema_mean_fg_dice': list(),
+            'ema_dice_per_class_or_region': list(),
+        }
+
+        # 分類頭相關的 logging items 只在有分類頭時加入
+        if self.has_cls_head:
+            self.my_fantastic_logging['train_cls_losses'] = list()
+            self.my_fantastic_logging['train_accuracys'] = list()
+            self.my_fantastic_logging['train_sensitivitys'] = list()
+            self.my_fantastic_logging['train_specificitys'] = list()
+            self.my_fantastic_logging['val_cls_losses'] = list()
+            self.my_fantastic_logging['val_accuracys'] = list()
+            self.my_fantastic_logging['val_sensitivitys'] = list()
+            self.my_fantastic_logging['val_specificitys'] = list()
+
+        # Dynamically add deep supervision level logging items
+        for i in range(num_deep_supervision_levels):
+            self.my_fantastic_logging[f'train_dice_loss{i}'] = list()
+            self.my_fantastic_logging[f'train_supervision_dice{i}'] = list()
+            self.my_fantastic_logging[f'val_dice_loss{i}'] = list()
+            self.my_fantastic_logging[f'val_supervision_dice{i}'] = list()
+
+        # shut up, this logging is great
+
+    def log(self, key, value, epoch: int):
+        """
+        sometimes shit gets messed up. We try to catch that here
+        """
+        assert key in self.my_fantastic_logging.keys() and isinstance(self.my_fantastic_logging[key], list), \
+            'This function is only intended to log stuff to lists and to have one entry per epoch'
+
+        if self.verbose: print(f'logging {key}: {value} for epoch {epoch}')
+
+        if len(self.my_fantastic_logging[key]) < (epoch + 1):
+            self.my_fantastic_logging[key].append(value)
+        else:
+            assert len(self.my_fantastic_logging[key]) == (epoch + 1), 'something went horribly wrong. My logging ' \
+                                                                       'lists length is off by more than 1'
+            print(f'maybe some logging issue!? logging {key} and {value}')
+            self.my_fantastic_logging[key][epoch] = value
+
+        # handle the ema_fg_dice special case! It is automatically logged when we add a new mean_fg_dice
+        if key == 'mean_fg_dice':
+            new_ema_pseudo_dice = self.my_fantastic_logging['ema_fg_dice'][epoch - 1] * 0.9 + 0.1 * value \
+                if len(self.my_fantastic_logging['ema_fg_dice']) > 0 else value
+            self.log('ema_fg_dice', new_ema_pseudo_dice, epoch)
+
+        # handle the ema_fg_dice special case! It is automatically logged when we add a new mean_fg_dice
+        if key == 'train_mean_fg_dice':
+            new_ema_pseudo_dice = self.my_fantastic_logging['train_ema_fg_dice'][epoch - 1] * 0.9 + 0.1 * value \
+                if len(self.my_fantastic_logging['train_ema_fg_dice']) > 0 else value
+            self.log('train_ema_fg_dice', new_ema_pseudo_dice, epoch)
+
+    def plot_progress_png(self, output_folder):
+        # we infer the epoch form our internal logging（排除空 list，如 EMA 未啟用時）
+        non_empty = [len(i) for i in self.my_fantastic_logging.values() if len(i) > 0]
+        epoch = min(non_empty) - 1 if non_empty else 0  # lists of epoch 0 have len 1
+        sns.set(font_scale=2.5)
+        # 判斷是否有 deep supervision logging 資料
+        has_ds_logging = len(self.my_fantastic_logging.get('train_ce_losses', [])) > 0
+        # per-component loss keys（compound loss 才有，例如 train_loss_Tversky_and_CE_loss）
+        comp_keys = sorted({k.replace('train_loss_', '') for k in self.my_fantastic_logging
+                            if k.startswith('train_loss_') and len(self.my_fantastic_logging[k]) > 0})
+        has_loss_components = len(comp_keys) > 0
+        num_plots = 2 + (3 if has_ds_logging else 0) + (1 if self.has_cls_head else 0) + (1 if has_loss_components else 0)
+        fig, ax_all = plt.subplots(num_plots, 1, figsize=(30, num_plots * 18))
+        # regular progress.png as we are used to from previous nnU-Net versions
+        ax = ax_all[0]
+        ax2 = ax.twinx()
+        x_values = list(range(epoch + 1))
+        ax.plot(x_values, self.my_fantastic_logging['train_losses'][:epoch + 1], color='b', ls='-', label="loss_tr", linewidth=4)
+        ax.plot(x_values, self.my_fantastic_logging['train_seg_losses'][:epoch + 1], color='cyan', ls='-', label="seg_loss_tr", linewidth=4)
+        ax.plot(x_values, self.my_fantastic_logging['val_losses'][:epoch + 1], color='r', ls='-', label="loss_val", linewidth=4)
+        ax.plot(x_values, self.my_fantastic_logging['val_seg_losses'][:epoch + 1], color='orange', ls='-', label="seg_loss_val", linewidth=4)
+        if self.has_cls_head:
+            ax.plot(x_values, self.my_fantastic_logging['train_cls_losses'][:epoch + 1], color='purple', ls='-', label="cls_loss_tr", linewidth=4)
+            ax.plot(x_values, self.my_fantastic_logging['val_cls_losses'][:epoch + 1], color='magenta', ls='-', label="cls_loss_val", linewidth=4)
+        ax2.plot(x_values, self.my_fantastic_logging['train_mean_fg_dice'][:epoch + 1], color='y', ls='dotted', label="train pseudo dice",
+                 linewidth=3)
+        ax2.plot(x_values, self.my_fantastic_logging['train_ema_fg_dice'][:epoch + 1], color='y', ls='-', label="train pseudo dice (mov. avg.)",
+                 linewidth=4)
+        ax2.plot(x_values, self.my_fantastic_logging['mean_fg_dice'][:epoch + 1], color='g', ls='dotted', label="val pseudo dice",
+                 linewidth=3)
+        ax2.plot(x_values, self.my_fantastic_logging['ema_fg_dice'][:epoch + 1], color='g', ls='-', label="val pseudo dice (mov. avg.)",
+                 linewidth=4)
+
+        ax.set_xlabel("epoch")
+        ax.set_ylabel("loss")
+        ax2.set_ylabel("pseudo dice")
+        ax.legend(loc=(0, 1))
+        ax2.legend(loc=(0.2, 1))
+
+        plot_idx = 1
+        train_colors = ['b', 'cyan', 'purple', 'g', 'y', 'pink', 'brown', 'gray']
+        val_colors = ['r', 'orange', 'magenta', 'darkred', 'olive', 'navy', 'teal', 'black']
+
+        # deep supervision 相關圖表（僅在 enable_deep_supervision_logging 時才有資料）
+        if has_ds_logging:
+            #第二格：deep supervision dice
+            ax = ax_all[plot_idx]
+            x_values = list(range(epoch + 1))
+            for i in range(self.num_deep_supervision_levels):
+                train_color = train_colors[i % len(train_colors)]
+                ax.plot(x_values, self.my_fantastic_logging[f'train_supervision_dice{i}'][:epoch + 1],
+                       color=train_color, ls='-', label=f"train deep_supervision dice{i}", linewidth=4)
+            for i in range(self.num_deep_supervision_levels):
+                val_color = val_colors[i % len(val_colors)]
+                ax.plot(x_values, self.my_fantastic_logging[f'val_supervision_dice{i}'][:epoch + 1],
+                       color=val_color, ls='-', label=f"val deep_supervision dice{i}", linewidth=4)
+            ax.set_xlabel("epoch")
+            ax.set_ylabel("pseudo dice")
+            ax.legend(loc=(0, 1))
+            plot_idx += 1
+
+            #第三格：dice losses per level
+            ax = ax_all[plot_idx]
+            x_values = list(range(epoch + 1))
+            for i in range(self.num_deep_supervision_levels):
+                train_color = train_colors[i % len(train_colors)]
+                ax.plot(x_values, self.my_fantastic_logging[f'train_dice_loss{i}'][:epoch + 1],
+                       color=train_color, ls='-', label=f"train_dice_loss{i}", linewidth=4)
+            for i in range(self.num_deep_supervision_levels):
+                val_color = val_colors[i % len(val_colors)]
+                ax.plot(x_values, self.my_fantastic_logging[f'val_dice_loss{i}'][:epoch + 1],
+                       color=val_color, ls='-', label=f"val_dice_loss{i}", linewidth=4)
+            ax.set_xlabel("epoch")
+            ax.set_ylabel("loss")
+            ax.legend(loc=(0, 1))
+            plot_idx += 1
+
+            #第四格：ce_loss
+            ax = ax_all[plot_idx]
+            x_values = list(range(epoch + 1))
+            ax.plot(x_values, self.my_fantastic_logging['train_ce_losses'][:epoch + 1], color='cyan', ls='-', label="ce_loss_tr", linewidth=4)
+            ax.plot(x_values, self.my_fantastic_logging['val_ce_losses'][:epoch + 1], color='orange', ls='-', label="ce_loss_val", linewidth=4)
+            ax.set_xlabel("epoch")
+            ax.set_ylabel("loss")
+            ax.legend(loc=(0, 1))
+            plot_idx += 1
+        #第四格：分類器 accuracy / sensitivity / specificity（僅在有分類頭時）
+        if self.has_cls_head:
+            ax = ax_all[plot_idx]
+            x_values = list(range(epoch + 1))
+            ax.plot(x_values, self.my_fantastic_logging['train_accuracys'][:epoch + 1], color='b', ls='-', label="accuracy_tr", linewidth=4)
+            ax.plot(x_values, self.my_fantastic_logging['val_accuracys'][:epoch + 1], color='r', ls='-', label="accuracy_val", linewidth=4)
+            ax.plot(x_values, self.my_fantastic_logging['train_sensitivitys'][:epoch + 1], color='cyan', ls='-', label="sensitivity_tr", linewidth=4)
+            ax.plot(x_values, self.my_fantastic_logging['val_sensitivitys'][:epoch + 1], color='orange', ls='-', label="sensitivity_val", linewidth=4)
+            ax.plot(x_values, self.my_fantastic_logging['train_specificitys'][:epoch + 1], color='y', ls='-', label="specificity_tr", linewidth=4)
+            ax.plot(x_values, self.my_fantastic_logging['val_specificitys'][:epoch + 1], color='g', ls='-', label="specificity_val", linewidth=4)
+            ax.set_xlabel("epoch")
+            ax.set_ylabel("percent")
+            ax.legend(loc=(0, 1))
+            plot_idx += 1
+
+        # === per-component loss panel（compound loss 才有；如 Tversky_and_CE_loss vs BoundaryLoss）===
+        if has_loss_components:
+            ax = ax_all[plot_idx]
+            comp_colors = ['b', 'orange', 'green', 'purple', 'brown', 'pink', 'gray']
+            for i, ck in enumerate(comp_keys):
+                c = comp_colors[i % len(comp_colors)]
+                tr_key = f'train_loss_{ck}'
+                val_key = f'val_loss_{ck}'
+                if tr_key in self.my_fantastic_logging and len(self.my_fantastic_logging[tr_key]) > 0:
+                    ax.plot(x_values, self.my_fantastic_logging[tr_key][:epoch + 1],
+                            color=c, ls='-', label=f"train {ck}", linewidth=4)
+                if val_key in self.my_fantastic_logging and len(self.my_fantastic_logging[val_key]) > 0:
+                    ax.plot(x_values, self.my_fantastic_logging[val_key][:epoch + 1],
+                            color=c, ls='--', label=f"val {ck}", linewidth=4)
+            ax.set_xlabel("epoch")
+            ax.set_ylabel("loss (weighted)")
+            ax.set_title("Per-component loss (weighted contribution to total)", fontsize=20)
+            ax.legend(loc=(0, 1))
+            plot_idx += 1
+
+        # learning rate
+        ax = ax_all[plot_idx]
+        ax.plot(x_values, self.my_fantastic_logging['lrs'][:epoch + 1], color='b', ls='-', label="learning rate", linewidth=4)
+        ax.set_xlabel("epoch")
+        ax.set_ylabel("learning rate")
+        ax.legend(loc=(0, 1))
+
+        # Loss config 大字 suptitle（從 trainer 傳進來的 loss_str）
+        loss_str = getattr(self, "loss_str", None)
+        if loss_str:
+            fig.suptitle(f"Loss: {loss_str}", fontsize=28, y=0.998)
+            plt.tight_layout(rect=[0, 0, 1, 0.985])
+        else:
+            plt.tight_layout()
+
+        fig.savefig(join(output_folder, "progress.png"))
+        plt.close()
+
+    def get_checkpoint(self):
+        return self.my_fantastic_logging
+
+    def load_checkpoint(self, checkpoint: dict):
+        self.my_fantastic_logging = checkpoint
+        # 載入舊 checkpoint 時，根據 has_cls_head 決定是否保留/移除 cls 相關 keys
+        cls_keys = ['train_cls_losses', 'val_cls_losses',
+                    'train_accuracys', 'train_sensitivitys', 'train_specificitys',
+                    'val_accuracys', 'val_sensitivitys', 'val_specificitys']
+        if not self.has_cls_head:
+            for k in cls_keys:
+                self.my_fantastic_logging.pop(k, None)
+        else:
+            for k in cls_keys:
+                if k not in self.my_fantastic_logging:
+                    self.my_fantastic_logging[k] = list()
+        # 確保 EMA keys 存在（舊 checkpoint 可能沒有）
+        for k in ['ema_val_losses', 'ema_mean_fg_dice', 'ema_dice_per_class_or_region']:
+            if k not in self.my_fantastic_logging:
+                self.my_fantastic_logging[k] = list()
