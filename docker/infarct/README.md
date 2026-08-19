@@ -61,3 +61,34 @@ SynthSeg 一次跑（aparc+aseg）
   (`util.py` 4 參數需要 `path/dicom/nii/` 佈局;`util_aneurysm.py` 3 參數),
   容器要用哪個、以及檔案要擺成什麼樣子,還沒定案。
 - preprocess / inference / postprocess / server 四支程式本身。
+
+## ⚠ 推論引擎必須從 MUTP 搬過來（2026-08-19 查證）
+
+`DeepConcat` 與 `image_channels` 在 david 上**完全不存在** —— chuan repo 命中 0，
+容器 site-packages 命中 0。所選模型 `infarct_25d_s2_deepconcat_maskaware_seed3`
+用的是 `ResidualEncoderUNet_DeepConcat`，不是 david fork 裡的標準
+`ResidualEncoderUNet`。
+
+要搬的東西：
+
+1. `ResidualEncoderUNet_DeepConcat` 架構類別
+2. MUTP `src/mutp/engines/backends/custom_predict.py`（1,137 行）
+
+第 2 項是關鍵，而且失敗方式是無聲的。`custom_predict.py:890-920` 有一段覆寫：
+
+    # nnUNet 預設 resampling_fn_data 對所有 channel 都用 order=3 cubic，
+    # 會把整數 label 弄成浮點 (如 vessel8 0-8 → 1.18, 3.6, 7.99...)
+    if hasattr(network, "image_channels"):
+        image ch → is_seg=False, order=3   # cubic
+        mask  ch → is_seg=True,  order=1   # one-hot 後 argmax，標籤保持整數
+
+它靠 `hasattr(network, "image_channels")` 觸發。用標準 nnUNet predictor 載入同一份
+權重，這段不會執行，通道 2 的 0-9 會被 cubic 內插，模型照樣跑完、照樣出結果，
+**不報錯也不警告**。
+
+因此 `inference.py` 必須呼叫 vendored 的 MUTP predictor，不能呼叫既有 fork 的
+`gpu_nnUNet`。驗收項 V7（dump 模型輸入張量、確認通道 2 的 np.unique 是 {0..9} 的
+子集）就是為了擋這個。
+
+相依性評估：david 的 `tf_2_14` 已有 torch 2.6.0+cu118 與同一套 nnResUNet fork，
+先前評估為「一個 image 即可，不需移植 MUTP 的 conda env」。
