@@ -741,6 +741,27 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
             # Infarct_Pred_list.xlsx describing results nobody received. Still
             # ahead of delivery, so an Excel failure aborts before the platform
             # sees anything.
+            # Visual report. Written under the process directory only -- not
+            # staged, not delivered, not declared in reformatted_series. The
+            # RADAX worked examples carry no report series, so publishing one
+            # would put a key in prediction.json the platform has not agreed to
+            # parse; that is a conversation to have before it ships, not a
+            # decision to make here.
+            #
+            # A failure here does not fail the run. The bundle is the clinical
+            # payload and it is already complete by this point; losing a
+            # visualisation should not discard a correct result. It is logged at
+            # warning so it cannot pass unnoticed.
+            try:
+                import report as _report
+                produced = _report.generate_report(
+                    process_dir, patient_id, lesions, region_labels, colors)
+                logger.info("[postprocess] report: %d PNG, %d DICOM",
+                            len(produced["png"]), len(produced["dcm"]))
+            except Exception as exc:
+                logger.warning("[postprocess] report generation failed: %s",
+                               exc, exc_info=True)
+
             excel_path = _write_excel(path_excel, study_id, lesions)
             delivered_dir = _deliver_to_platform(staging_dir, study_uid, inference_id)
             _publish_to_output_folder(staging_dir, output_folder)
