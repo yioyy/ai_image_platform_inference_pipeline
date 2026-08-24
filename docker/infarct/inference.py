@@ -231,8 +231,11 @@ def infarct_inference(process_dir: str, model_dir: str, gpu_id: int = 0) -> bool
             verbose=True,
             overwrite=True,
             checkpoint_name="checkpoint_best.pth",
-            num_processes_preprocessing=2,
-            num_processes_segmentation_export=3,
+            # One case, so there is nothing to parallelise, and the server runs
+            # with spawn -- which would have to pickle a configuration manager
+            # that custom_predict builds with type() and has no importable name.
+            num_processes_preprocessing=1,
+            num_processes_segmentation_export=1,
             desired_gpu_index=gpu_id,
             device=torch.device("cuda"),
             batch_size=BATCH_SIZE,

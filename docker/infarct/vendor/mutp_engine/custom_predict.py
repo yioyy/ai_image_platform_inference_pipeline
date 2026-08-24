@@ -930,7 +930,21 @@ def predict_from_raw_data(list_of_lists_or_source_folder: Union[str, List[List[s
     ppa = PreprocessAdapter(list_of_lists_or_source_folder, Mask_list_of_lists_or_Mask_folder, preprocessor,
                             output_filename_truncated, plans_manager, dataset_json,
                             configuration_manager, num_processes)
-    mta = MultiThreadedAugmenter(ppa, NumpyToTensor(), num_processes, 1, None, pin_memory=device.type == 'cuda')
+    # MultiThreadedAugmenter spawns a worker even at num_processes=1, and the
+    # server sets the start method to spawn (fork inherits a CUDA context and
+    # deadlocks on first use). Spawning pickles the configuration manager --
+    # which, for the mask-fusion architectures, is the subclass built with
+    # type() a few lines above and therefore has no importable name. The result
+    # is a PicklingError before any inference happens.
+    #
+    # For one case there is no work to parallelise, so take the in-process path
+    # instead of making the dynamic class picklable. Same fix, same reason, as
+    # brain-parcellation c2399f7 on the aneurysm predictor.
+    if num_processes <= 1:
+        from batchgenerators.dataloading.single_threaded_augmenter import SingleThreadedAugmenter
+        mta = SingleThreadedAugmenter(ppa, NumpyToTensor())
+    else:
+        mta = MultiThreadedAugmenter(ppa, NumpyToTensor(), num_processes, 1, None, pin_memory=device.type == 'cuda')
     
     # precompute gaussian
     inference_gaussian = torch.from_numpy(

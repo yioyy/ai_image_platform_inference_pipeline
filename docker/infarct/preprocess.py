@@ -110,8 +110,20 @@ def _locate(output_paths: dict, synthseg_dir: str, suffix: str) -> str:
     return hits[0]
 
 
-def _derive_infarct10(aparc_path: str, out_path: str) -> "object":
-    """aparc+aseg -> the 10-class map the model was trained against."""
+def _derive_infarct10(aparc_path: str, out_path: str, ref_path: str) -> "object":
+    """aparc+aseg -> the 10-class map the model was trained against.
+
+    Geometry is taken from ref_path rather than from the resampled label volume.
+    They describe the same voxel grid -- the aparc+aseg was resampled onto the
+    input with order=0 -- but the affine has been recomputed along the way and
+    comes back with drift in the last decimals (7.0 arriving as 6.999970436).
+    nnUNet's reader compares channel spacings exactly and refuses the case, so
+    the three channels have to agree bit for bit, and the reference image is the
+    one that is right.
+
+    The shapes are asserted rather than assumed: adopting a header for a volume
+    on a genuinely different grid would silently mis-register the anatomy.
+    """
     import nibabel as nib
     import numpy as np
     from merge_rules import apply_merge_rule, unmapped_labels
@@ -132,7 +144,15 @@ def _derive_infarct10(aparc_path: str, out_path: str) -> "object":
         )
 
     merged = apply_merge_rule(seg, "infarct10").astype(np.uint8)
-    out = nib.Nifti1Image(merged, seg_nii.affine, seg_nii.header)
+
+    ref = nib.load(ref_path)
+    if merged.shape != ref.shape:
+        raise ValueError(
+            f"infarct10 map is {merged.shape} but {os.path.basename(ref_path)} "
+            f"is {ref.shape}; these are different grids, not a rounding "
+            f"difference, and the anatomy channel would be mis-registered."
+        )
+    out = nib.Nifti1Image(merged, ref.affine, ref.header)
     out.set_data_dtype(np.uint8)
     nib.save(out, out_path)
     logger.info("[preprocess] infarct10 merged: %s (classes %s)",
@@ -148,7 +168,7 @@ def _derive_clinical_territories(path_nii: str, synthseg_dir: str,
     so the SynthSeg outputs are staged under the names it expects rather than
     changing a function that aneurysm and WMH both depend on.
     """
-    import util_aneurysm
+    import synthseg_resample
 
     resample_src = _locate(output_paths, synthseg_dir, "_resample.nii.gz")
     dwi_src = _locate(output_paths, synthseg_dir, "_DWI.nii.gz")
@@ -156,7 +176,7 @@ def _derive_clinical_territories(path_nii: str, synthseg_dir: str,
     shutil.copy(resample_src, os.path.join(path_nii, "DWI0_resample.nii.gz"))
     shutil.copy(dwi_src, os.path.join(path_nii, "DWI0_DWI.nii.gz"))
 
-    util_aneurysm.resampleSynthSEG2original(path_nii, "DWI0", "DWI")
+    synthseg_resample.resampleSynthSEG2original(path_nii, "DWI0", "DWI")
 
     produced = os.path.join(path_nii, "NEW_DWI0_DWI.nii.gz")
     if not os.path.isfile(produced):
@@ -171,31 +191,44 @@ def _apply_brain_mask(process_dir: str, merged) -> None:
     which is only meaningful because the training images were already skull
     stripped this way. Feeding it un-stripped images silently shifts the
     normalisation statistics.
+
+    Every output adopts DWI1000's geometry. The series come out of separate
+    dcm2niix runs which each derive slice spacing from their own slice
+    positions, so the same 7.0 mm acquisition arrives as 7.0 in one channel and
+    6.999998 in another. nnUNet's reader compares channel spacings exactly and
+    refuses the case; normalising here fixes the whole class of it rather than
+    the one channel that happened to drift today. Shapes are asserted, so this
+    can only ever paper over float noise, never over a real grid difference.
     """
     import nibabel as nib
     import numpy as np
 
     mask = (merged > 0).astype(np.uint8)
 
-    mask_nii = None
+    ref = nib.load(os.path.join(process_dir, "DWI1000.nii.gz"))
+    if mask.shape != ref.shape:
+        raise ValueError(
+            f"brain mask is {mask.shape} but DWI1000 is {ref.shape}; "
+            f"SynthSeg ran on a different grid than this series"
+        )
+
     for name in ("DWI1000", "ADC", "DWI0"):
         src = os.path.join(process_dir, f"{name}.nii.gz")
         nii = nib.load(src)
         arr = np.asanyarray(nii.dataobj)
-        if arr.shape != mask.shape:
+        if arr.shape != ref.shape:
             raise ValueError(
-                f"{name} is {arr.shape} but the brain mask is {mask.shape}; "
-                f"SynthSeg ran on a different grid than this series"
+                f"{name} is {arr.shape} but DWI1000 is {ref.shape}; these are "
+                f"different grids, not a rounding difference"
             )
-        out = nib.Nifti1Image(arr * mask, nii.affine, nii.header)
+        out = nib.Nifti1Image(arr * mask, ref.affine, ref.header)
         nib.save(out, os.path.join(process_dir, f"BET_{name}.nii.gz"))
-        mask_nii = nii
 
-    out = nib.Nifti1Image(mask, mask_nii.affine, mask_nii.header)
+    out = nib.Nifti1Image(mask, ref.affine, ref.header)
     out.set_data_dtype(np.uint8)
     nib.save(out, os.path.join(process_dir, "BET_mask.nii.gz"))
-    logger.info("[preprocess] skull-strip applied (brain fraction %.4f)",
-                float(mask.mean()))
+    logger.info("[preprocess] skull-strip applied (brain fraction %.4f), "
+                "geometry from DWI1000", float(mask.mean()))
 
 
 def infarct_preprocess(
@@ -258,7 +291,8 @@ def infarct_preprocess(
 
         aparc = _locate(output_paths, synthseg_dir, "_synthseg33_native.nii.gz")
         merged = _derive_infarct10(
-            aparc, os.path.join(process_dir, "SynthSeg_merged.nii.gz"))
+            aparc, os.path.join(process_dir, "SynthSeg_merged.nii.gz"),
+            os.path.join(process_dir, "DWI1000.nii.gz"))
 
         territories = _derive_clinical_territories(
             path_nii, synthseg_dir, output_paths)
