@@ -459,13 +459,23 @@ def _emit_series(
         # skipped — and skipped silently, leaving a finding with no mask.
         dcm_seg.save_as(os.path.join(dest_dir, f"{seg_series_uid}_{lesion['label']}.dcm"))
 
-        detections.append({
+        # The aggregate row is marked with role, not with a location. The
+        # platform's rule is positional-free but strict about absence: at most
+        # one detection carries role, and an ordinary finding must not carry the
+        # key at all -- there is no role: "finding", so a present-but-empty role
+        # would read as a malformed total rather than as a normal lesion.
+        detection = {
             "annotated_series_instance_uid": annotated_uid,
             "series_instance_uid": seg_series_uid,
             "sop_instance_uid": seg_sop_uid,
             "label": lesion["label"],
             "type": lesion["type"],
-            "location": location,
+        }
+        if lesion["label"] == "Total":
+            detection["role"] = "total"
+        else:
+            detection["location"] = location
+        detection.update({
             "volume": lesion["volume_ml"],
             "mean_adc": lesion["mean_adc"],
             # Clamped per series: the lesion index is computed once from the
@@ -475,6 +485,14 @@ def _emit_series(
             "probability": lesion["prob_max"],
             "mask_index": lesion["mask_index"],
         })
+        detections.append(detection)
+
+    n_total = sum(1 for d in detections if d.get("role") == "total")
+    if n_total != 1:
+        raise ValueError(
+            f"expected exactly one detection with role='total', got {n_total}. "
+            f"The platform treats a second one as a malformed result."
+        )
 
     return annotated_uid, detections
 
