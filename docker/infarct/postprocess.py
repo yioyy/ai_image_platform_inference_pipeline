@@ -22,7 +22,14 @@ Output — the same flat bundle written to two places:
 
 Two SEG sets per lesion is not redundancy: the platform renders the DWI1000 and
 the ADC series side by side, and a SEG can only reference the frames of one
-series. The ADC set is what `reformatted_series` in prediction.json points at.
+series. Both sets go in the top-level `detections` list, each row naming its
+own source in annotated_series_instance_uid; `reformatted_series` stays empty.
+That key means something narrower than "a second series": the platform reads
+every entry as a derived image series it must ingest, requiring a directory of
+DICOM images named by its series_instance_uid inside the bundle (that is where
+aneurysm ships its MIP), and it stamps those detections AI_DERIVED_ANEURYSM_SEG
+unconditionally. ADC is an acquired series already in the archive, so it belongs
+in neither role.
 
 Deliberately NOT carried over from _reference/ (needFollowup era, old platform):
 orthanc_zip_upload, upload_json_aiteam, the $9 followup json, and the PNG report
@@ -733,18 +740,19 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
                 "inference_id": inference_id,
                 "inference_timestamp": _utc_iso_now_ms(),
                 "input_study_instance_uid": [study_uid],
-                # One entry, the DWI1000 series — the samples list only the
-                # series the top-level detections annotate. ADC is declared
-                # through reformatted_series instead.
-                "input_series_instance_uid": [dwi_series_uid] if dwi_series_uid else [],
+                # Both series the top-level detections annotate. The model reads
+                # DWI1000 and ADC together, so listing only one understates what
+                # the result depends on.
+                "input_series_instance_uid": [u for u in (dwi_series_uid, adc_series_uid) if u],
                 "model_id": INFARCT_MODEL_ID,
                 "patient_id": patient_id,
-                "detections": dwi_detections,
-                "reformatted_series": [{
-                    "series_instance_uid": adc_series_uid,
-                    "series_description": "adc",
-                    "detections": adc_detections,
-                }],
+                # One flat list across both source series. Each row already
+                # carries its own annotated_series_instance_uid, which is what
+                # the platform records as the source, so a second series needs
+                # no second container. See the module docstring for why
+                # reformatted_series is the wrong home for the ADC rows.
+                "detections": dwi_detections + adc_detections,
+                "reformatted_series": [],
             }
 
             prediction_path = os.path.join(staging_dir, "prediction.json")
@@ -754,12 +762,16 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
             # The bundle is only usable if every detection has both its SEGs. A
             # UID collision or a save that lost a file would otherwise ship a
             # half-populated study that looks fine in the json.
+            # One SEG file per detection row now that both series share the
+            # list, so the count is a direct equality rather than a factor of
+            # two. The platform resolves each row's file by the
+            # "<seg_series_uid>_" prefix, so a row without its file is a 404 at
+            # upload time, not a rendering glitch.
             n_dcm = len([n for n in os.listdir(staging_dir) if BUNDLE_DCM_RE.match(n)])
-            if n_dcm != 2 * len(dwi_detections):
+            n_det = len(payload["detections"])
+            if n_dcm != n_det:
                 logger.error("[postprocess] %s: %d SEG files staged, expected %d "
-                             "(2 x %d detections)",
-                             study_id, n_dcm, 2 * len(dwi_detections),
-                             len(dwi_detections))
+                             "(one per detection row)", study_id, n_dcm, n_det)
                 return False
 
             # Written here rather than before the SEG loop: a run that dies during
