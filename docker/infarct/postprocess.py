@@ -59,10 +59,16 @@ MODEL_NAME = "infarct_model"
 # a bind mount, so this value only ever applies to a bare CLI invocation.
 UPLOAD_ROOT_DEFAULT = "/home/david/ai-inference-result"
 
-# The platform has not issued a model_id for infarct yet. The all-zero UUID is
-# RADAX's placeholder for that state; borrowing aneurysm's real UUID instead
-# would file these findings under the wrong model.
-MODEL_ID_PLACEHOLDER = "00000000-0000-0000-0000-000000000000"
+# Assigned by the platform 2026-08, fixed for every site rather than minted
+# per deployment: aneurysm and CMB were already hardcoded and infarct now
+# matches them, so site-config can carry the value instead of the two sides
+# copying it to each other on install day.
+#
+# The same constant is bound worker-side, in task_pipeline's model
+# resolution. Setting one without the other is the failure to watch for:
+# the worker would route the job correctly while the payload it produced
+# still claimed the all-zero placeholder.
+INFARCT_MODEL_ID = "908f2f2f-4774-4652-91f9-e9b2674de9c6"
 
 # Territory cut-off. _reference used volume_ml >= 0.3, which on a thin-z DWI
 # (~0.9 x 0.9 x 6 mm, roughly 5 uL per voxel) means ~62 voxels — it silently
@@ -487,7 +493,7 @@ def _emit_series(
         else:
             detection["location"] = location
         detection.update({
-            "volume": lesion["volume_ml"],
+            "volume_ml": lesion["volume_ml"],
             "mean_adc": lesion["mean_adc"],
             # Clamped per series: the lesion index is computed once from the
             # prediction grid, but ADC and DWI1000 need not have the same
@@ -722,7 +728,7 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
                 # series the top-level detections annotate. ADC is declared
                 # through reformatted_series instead.
                 "input_series_instance_uid": [dwi_series_uid] if dwi_series_uid else [],
-                "model_id": MODEL_ID_PLACEHOLDER,
+                "model_id": INFARCT_MODEL_ID,
                 "patient_id": patient_id,
                 "detections": dwi_detections,
                 "reformatted_series": [{
