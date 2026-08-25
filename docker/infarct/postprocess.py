@@ -22,14 +22,7 @@ Output — the same flat bundle written to two places:
 
 Two SEG sets per lesion is not redundancy: the platform renders the DWI1000 and
 the ADC series side by side, and a SEG can only reference the frames of one
-series. Both sets go in the top-level `detections` list, each row naming its
-own source in annotated_series_instance_uid; `reformatted_series` stays empty.
-That key means something narrower than "a second series": the platform reads
-every entry as a derived image series it must ingest, requiring a directory of
-DICOM images named by its series_instance_uid inside the bundle (that is where
-aneurysm ships its MIP), and it stamps those detections AI_DERIVED_ANEURYSM_SEG
-unconditionally. ADC is an acquired series already in the archive, so it belongs
-in neither role.
+series. The ADC set is what `reformatted_series` in prediction.json points at.
 
 Deliberately NOT carried over from _reference/ (needFollowup era, old platform):
 orthanc_zip_upload, upload_json_aiteam, the $9 followup json, and the PNG report
@@ -395,6 +388,44 @@ def _clear_stale_bundle(output_folder: str) -> None:
             os.remove(os.path.join(output_folder, name))
 
 
+def _stage_reformatted_series(src_dir: str, staging_dir: str,
+                              series_uid: str, expected_n: int) -> bool:
+    """Copy a source series' instances into <staging>/<series_uid>/.
+
+    reformatted_series is not just a label on the detections: the platform
+    reads every entry as a series it has to ingest. collectFilesForUpload maps
+    the entry to <bundle>/<series_instance_uid>/ and readdirs it, then uploads
+    each .dcm to Orthanc. Without the directory the whole completion callback
+    fails with ENOENT before a single SEG is stored -- not a partial import, no
+    import at all.
+
+    The ADC instances are already in the archive carrying these same
+    SOPInstanceUIDs, so the upload side is a no-op; what the copy buys is the
+    directory the contract requires. The entry has to stay, ADC and DWI1000
+    being what decides which series the viewer puts in which pane.
+    """
+    dest = os.path.join(staging_dir, series_uid)
+    os.makedirs(dest, exist_ok=True)
+    copied = 0
+    for name in sorted(os.listdir(src_dir)):
+        if not name.lower().endswith(".dcm"):
+            # The platform filters on the extension too, so anything else here
+            # would be silently dropped on its side rather than ours.
+            continue
+        shutil.copy2(os.path.join(src_dir, name), os.path.join(dest, name))
+        copied += 1
+
+    if copied != expected_n:
+        # The detections were computed against the instances loaded from this
+        # directory. A different count means the folder shipped is not the
+        # series the SEGs reference, which the platform cannot detect -- it
+        # would ingest whatever is there under the declared UID.
+        logger.error("[postprocess] reformatted series %s: staged %d instances, "
+                     "expected %d", series_uid, copied, expected_n)
+        return False
+    return True
+
+
 def _deliver_to_platform(staging_dir: str, study_uid: str, inference_id: str) -> str:
     """Copy the staged bundle into the tree the RAD backend reads. Returns its path.
 
@@ -437,7 +468,15 @@ def _publish_to_output_folder(staging_dir: str, output_folder: str) -> None:
     """
     _clear_stale_bundle(output_folder)
     for name in sorted(os.listdir(staging_dir)):
-        os.replace(os.path.join(staging_dir, name), os.path.join(output_folder, name))
+        src = os.path.join(staging_dir, name)
+        dst = os.path.join(output_folder, name)
+        # os.replace will not overwrite a non-empty directory, and the
+        # reformatted-series folder is one. _clear_stale_bundle cannot remove it
+        # by name because the series UID is not known at that point, so the
+        # previous run's copy is cleared here instead.
+        if os.path.isdir(src) and os.path.isdir(dst):
+            shutil.rmtree(dst)
+        os.replace(src, dst)
 
 
 def _emit_series(
@@ -735,24 +774,30 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
             adc_series_uid, adc_detections = _emit_series(
                 utils, "ADC", series_bundles["ADC"], lesions, colors, staging_dir)
 
+            # Declaring the series without shipping its directory is what the
+            # platform rejects; do both or neither.
+            if not _stage_reformatted_series(
+                    os.path.join(path_dcm, "ADC"), staging_dir, adc_series_uid,
+                    len(series_bundles["ADC"][2])):
+                return False
+
             inference_id = str(uuid.uuid4())
             payload: Dict[str, Any] = {
                 "inference_id": inference_id,
                 "inference_timestamp": _utc_iso_now_ms(),
                 "input_study_instance_uid": [study_uid],
-                # Both series the top-level detections annotate. The model reads
-                # DWI1000 and ADC together, so listing only one understates what
-                # the result depends on.
-                "input_series_instance_uid": [u for u in (dwi_series_uid, adc_series_uid) if u],
+                # One entry, the DWI1000 series — the samples list only the
+                # series the top-level detections annotate. ADC is declared
+                # through reformatted_series instead.
+                "input_series_instance_uid": [dwi_series_uid] if dwi_series_uid else [],
                 "model_id": INFARCT_MODEL_ID,
                 "patient_id": patient_id,
-                # One flat list across both source series. Each row already
-                # carries its own annotated_series_instance_uid, which is what
-                # the platform records as the source, so a second series needs
-                # no second container. See the module docstring for why
-                # reformatted_series is the wrong home for the ADC rows.
-                "detections": dwi_detections + adc_detections,
-                "reformatted_series": [],
+                "detections": dwi_detections,
+                "reformatted_series": [{
+                    "series_instance_uid": adc_series_uid,
+                    "series_description": "adc",
+                    "detections": adc_detections,
+                }],
             }
 
             prediction_path = os.path.join(staging_dir, "prediction.json")
@@ -762,16 +807,12 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
             # The bundle is only usable if every detection has both its SEGs. A
             # UID collision or a save that lost a file would otherwise ship a
             # half-populated study that looks fine in the json.
-            # One SEG file per detection row now that both series share the
-            # list, so the count is a direct equality rather than a factor of
-            # two. The platform resolves each row's file by the
-            # "<seg_series_uid>_" prefix, so a row without its file is a 404 at
-            # upload time, not a rendering glitch.
             n_dcm = len([n for n in os.listdir(staging_dir) if BUNDLE_DCM_RE.match(n)])
-            n_det = len(payload["detections"])
-            if n_dcm != n_det:
+            if n_dcm != 2 * len(dwi_detections):
                 logger.error("[postprocess] %s: %d SEG files staged, expected %d "
-                             "(one per detection row)", study_id, n_dcm, n_det)
+                             "(2 x %d detections)",
+                             study_id, n_dcm, 2 * len(dwi_detections),
+                             len(dwi_detections))
                 return False
 
             # Written here rather than before the SEG loop: a run that dies during
