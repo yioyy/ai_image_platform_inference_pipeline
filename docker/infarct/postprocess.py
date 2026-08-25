@@ -426,6 +426,53 @@ def _stage_reformatted_series(src_dir: str, staging_dir: str,
     return True
 
 
+def _archive_under_process(staging_dir: str, path_nnunet: str) -> None:
+    """Mirror the SEGs and prediction.json into the study's own nnUNet tree.
+
+    The delivered bundle lives under a per-run inference_id and is the
+    platform's copy; once a later run supersedes it there is nothing left to
+    open next to the inputs the result came from. These two are what anyone
+    checking a case actually wants beside Pred.nii.gz, so they are written where
+    the rest of the study's intermediates already are:
+
+        nnUNet/Dicom/Dicom-seg/<seg_series_uid>_<label>.dcm
+        nnUNet/JSON/prediction.json
+
+    Both directories are emptied of the previous run's files first: a rerun that
+    finds fewer lesions must not leave the earlier run's extra SEGs sitting
+    beside the new ones, where nothing distinguishes them.
+
+    Best-effort. This is a convenience copy, not the delivery -- a failure here
+    is logged and the run still succeeds.
+    """
+    try:
+        seg_dir = os.path.join(path_nnunet, "Dicom", "Dicom-seg")
+        json_dir = os.path.join(path_nnunet, "JSON")
+        for d in (seg_dir, json_dir):
+            os.makedirs(d, exist_ok=True)
+
+        for name in os.listdir(seg_dir):
+            if BUNDLE_DCM_RE.match(name):
+                os.remove(os.path.join(seg_dir, name))
+
+        n_seg = 0
+        for name in sorted(os.listdir(staging_dir)):
+            if BUNDLE_DCM_RE.match(name):
+                shutil.copy2(os.path.join(staging_dir, name),
+                             os.path.join(seg_dir, name))
+                n_seg += 1
+
+        src_json = os.path.join(staging_dir, "prediction.json")
+        if os.path.isfile(src_json):
+            shutil.copy2(src_json, os.path.join(json_dir, "prediction.json"))
+
+        logger.info("[postprocess] archived %d SEG -> %s, prediction.json -> %s",
+                    n_seg, seg_dir, json_dir)
+    except Exception as exc:
+        logger.warning("[postprocess] archiving under process dir failed: %s",
+                       exc, exc_info=True)
+
+
 def _deliver_to_platform(staging_dir: str, study_uid: str, inference_id: str) -> str:
     """Copy the staged bundle into the tree the RAD backend reads. Returns its path.
 
@@ -850,6 +897,8 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
                                exc, exc_info=True)
 
             excel_path = _write_excel(path_excel, study_id, lesions)
+            # Before the finally clause removes staging_dir.
+            _archive_under_process(staging_dir, path_nnunet)
             delivered_dir = _deliver_to_platform(staging_dir, study_uid, inference_id)
             _publish_to_output_folder(staging_dir, output_folder)
         finally:
