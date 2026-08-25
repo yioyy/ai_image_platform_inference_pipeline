@@ -217,6 +217,7 @@ def _assign_territories(
     synth: np.ndarray,
     total_mask: np.ndarray,
     region_labels: Dict[str, List[int]],
+    slice_axis: int = 0,
 ) -> np.ndarray:
     """Territory id per lesion voxel, with CSF/Background voxels pulled back in.
 
@@ -263,12 +264,20 @@ def _assign_territories(
     if not unparcellated.any():
         return assigned
 
-    # Axis 0 is the DICOM slice axis after get_array_to_dcm_axcodes, so a plane
-    # here is an acquired axial slice — the plane the original iterated over.
+    # A plane here has to be an acquired axial slice -- the plane the original
+    # iterated over -- and which axis that is depends on the caller's array
+    # space. Postprocess works after get_array_to_dcm_axcodes, where it is
+    # axis 0; the report draws in the reference display orientation, where it
+    # is axis 2. Reassigning across the wrong plane would pull voxels to a
+    # territory they never touch, so the axis is stated rather than assumed.
+    work = np.moveaxis(unparcellated, slice_axis, 0)
+    ref_all = np.moveaxis(parenchyma, slice_axis, 0)
+    out = np.moveaxis(assigned, slice_axis, 0)
+
     moved = 0
-    for z in np.unique(np.nonzero(unparcellated)[0]):
-        source = unparcellated[z]
-        reference = parenchyma[z]
+    for z in np.unique(np.nonzero(work)[0]):
+        source = work[z]
+        reference = ref_all[z]
         if not reference.any():
             # No parenchyma anywhere in this slice — above the vertex, or a
             # slice SynthSEG gave up on. There is nothing to attach these
@@ -280,11 +289,13 @@ def _assign_territories(
         # Same answer as the original's explicit O(n*m) loop over per-class
         # coordinate lists, in one pass instead of one pass per territory.
         _, nearest = ndimage.distance_transform_edt(reference == 0, return_indices=True)
-        assigned[z][source] = reference[nearest[0][source], nearest[1][source]]
+        out[z][source] = reference[nearest[0][source], nearest[1][source]]
         moved += int(source.sum())
 
     logger.info("[postprocess] reassigned %d CSF/Background lesion voxels to the "
                 "nearest in-plane territory", moved)
+    # moveaxis returns a view, so writes through `out` already landed in
+    # `assigned`.
     return assigned
 
 

@@ -16,6 +16,13 @@ reformatted_series. The RADAX worked examples carry no report series, so
 publishing one would put a key in prediction.json that the platform has not
 agreed to parse.
 
+The territory sheet colours the infarct within each involved territory, not
+the territory itself. The legend beside it reads "region: N ml", and that N
+is the infarct volume in that region -- colouring the whole parenchyma would
+put a number next to a shape that is a hundred times larger than it. The
+original drew from new_SynthSeg_array, which is label_overlap + the
+reallocated voxels: the lesion labelled by territory, never the parcellation.
+
 Two deviations from the original, both deliberate:
 
 - Dback_v (the background value that gets flattened to the display minimum) is
@@ -71,7 +78,7 @@ def _canvas(dwi, k, slice_y, slice_x, y_i, x_i, back_v):
     return np.clip(rgb, 0, 255).astype("uint8")
 
 
-def _generate_pngs(out_dir: str, patient_id: str, pred, dwi_nor, territory,
+def _generate_pngs(out_dir: str, patient_id: str, pred, dwi_nor, terr_lesion,
                    labels_config: Dict[str, List[int]], colors: Dict[str, str],
                    shown: Dict[str, float], volume_ml: float, mean_adc: int) -> List[str]:
     import matplotlib
@@ -132,7 +139,9 @@ def _generate_pngs(out_dir: str, patient_id: str, pred, dwi_nor, territory,
     # territory is involved -- an empty legend sheet tells a reader nothing.
     if shown:
         def _paint_terr(img, z):
-            plane = territory[:, :, z]
+            # terr_lesion is zero outside the lesion, so matching a label id
+            # here selects only the infarct that fell in that territory.
+            plane = terr_lesion[:, :, z]
             for region in shown:
                 rgb = mcolors.to_rgb(colors.get(region, "#ffffff"))
                 for lid in labels_config.get(region, []):
@@ -242,12 +251,22 @@ def generate_report(process_dir: str, patient_id: str, lesions: List[Dict],
     pred = _translate(np.asanyarray(pred_nii.dataobj).astype(np.int32), pred_nii)
     terr = _translate(np.asanyarray(terr_nii.dataobj).astype(np.int32), terr_nii)
 
+    # Same reassignment postprocess applied, recomputed here rather than
+    # passed in: postprocess works after get_array_to_dcm_axcodes, where the
+    # slice axis is 0, and this module draws in the reference display
+    # orientation, where it is 2. Handing the array across would mirror the
+    # report left to right, which on a stroke report is not a cosmetic
+    # difference. Recomputing keeps one space and the same rule.
+    from postprocess import _assign_territories
+    terr_lesion = _assign_territories(terr, pred > 0, labels_config,
+                                      slice_axis=2)
+
     total = next((l for l in lesions if l["location"] == "Total"), None)
     shown = {l["location"]: l["volume_ml"] for l in lesions
              if l["location"] != "Total"}
 
     pngs = _generate_pngs(
-        png_dir, patient_id, pred, dwi_nor, terr, labels_config, colors, shown,
+        png_dir, patient_id, pred, dwi_nor, terr_lesion, labels_config, colors, shown,
         total["volume_ml"] if total else 0.0,
         total["mean_adc"] if total else 0)
 
