@@ -550,11 +550,19 @@ def _emit_series(
         })
         detections.append(detection)
 
+    # One total per lesion set, and none when there is no lesion. The guard was
+    # written against the duplicate case and read n_total != 1, which turned
+    # every negative study into a failed run -- the common outcome for a brain
+    # MRI, and one the platform then showed as an error rather than as no
+    # findings. The empty bundle is the correct delivery: it is what tells the
+    # platform the model ran and saw nothing.
     n_total = sum(1 for d in detections if d.get("role") == "total")
-    if n_total != 1:
+    expected_total = 1 if lesions else 0
+    if n_total != expected_total:
         raise ValueError(
-            f"expected exactly one detection with role='total', got {n_total}. "
-            f"The platform treats a second one as a malformed result."
+            f"expected {expected_total} detection(s) with role='total' for "
+            f"{len(lesions)} lesion(s), got {n_total}. The platform treats a "
+            f"second one as a malformed result."
         )
 
     return annotated_uid, detections
