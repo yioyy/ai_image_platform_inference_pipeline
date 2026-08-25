@@ -584,7 +584,16 @@ def _notify_platform_complete(prediction_json_path: str, model_name: str) -> Non
             },
             timeout=30,
         )
-        logger.info("[notify] %s -> %s (%d)", model_name, url, r.status_code)
+        if r.ok:
+            logger.info("[notify] %s -> %s (%d)", model_name, url, r.status_code)
+        else:
+            # The body carries the reason and the status code does not. A 500
+            # reading "Model not found: infarct" is a missing AiModel row on the
+            # platform and nothing to fix here; a 400 is our payload. Logging
+            # only the number makes those two look identical, which cost a
+            # manual re-POST to tell apart.
+            logger.warning("[notify] %s -> %s (%d): %s",
+                           model_name, url, r.status_code, r.text[:400])
     except Exception as exc:
         logger.warning("[notify] %s failed: %s", model_name, exc)
 
