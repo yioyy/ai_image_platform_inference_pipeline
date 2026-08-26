@@ -48,6 +48,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import nibabel as nib
 import numpy as np
 import pandas as pd
+import pydicom
 from scipy import ndimage
 
 logger = logging.getLogger("infarct.postprocess")
@@ -426,6 +427,108 @@ def _stage_reformatted_series(src_dir: str, staging_dir: str,
     return True
 
 
+# (folder, SeriesDescription, SeriesNumber suffix, UID suffix). Carried over
+# from _reference/after_run_infarct.py::_update_dwi_series verbatim, so a study
+# processed by either pipeline lands on the same UIDs and the same names.
+DWI_SERIES_SPECS = (
+    ("DWI0", "DWI b=0", "01", "0"),
+    ("DWI1000", "DWI b=1000", "02", "1000"),
+)
+
+
+def _derive_uid(uid_value: Optional[str], suffix: str) -> str:
+    """Append the b-value suffix to a UID, or mint one when there is none.
+
+    Deterministic on purpose: the same source instance always yields the same
+    new UID, so a rerun overwrites its own previous output in Orthanc instead of
+    accumulating a second copy of the same images under fresh identifiers.
+    """
+    uid = str(uid_value).strip() if uid_value else ""
+    if uid:
+        return "%s%s" % (uid, suffix)
+    return "%s%s" % (pydicom.uid.generate_uid(), suffix)
+
+
+def _derive_series_number(series_value: Any, suffix: str) -> Optional[str]:
+    """Suffix the series number so the two halves sort apart in the viewer."""
+    digits = "".join(ch for ch in str(series_value).strip() if ch.isdigit())         if series_value is not None else ""
+    if digits:
+        return digits + suffix if len(digits) <= 2 else digits
+    return suffix or None
+
+
+def _rewrite_dwi_series(path_dcm: str) -> Dict[str, str]:
+    """Turn the two split b-value folders into two distinct DICOM series.
+
+    b=0 and b=1000 arrive interleaved inside one SeriesInstanceUID -- that is a
+    property of the acquisition, and the rename step separates them by the GE
+    private b-value tag into two folders that still carry the original series'
+    identity. Every instance therefore claims the same SeriesInstanceUID,
+    SeriesNumber and SeriesDescription, and a viewer asked to show "the DWI"
+    shows both b-values interleaved, which is what made the overlay look wrong:
+    the mask belongs to b=1000 alone.
+
+    So each folder is republished as its own series, with its own UID, number
+    and description, and the SEGs are drawn on the new b=1000 rather than on the
+    mixed original. The new instances are shipped to the archive with the
+    bundle; nothing rewrites what the archive already holds.
+
+    In place, before the series are loaded: everything downstream reads its
+    identity from these files, so the SEGs and prediction.json pick the new UIDs
+    up without knowing this happened.
+
+    Idempotent. A postprocess rerun over a directory already rewritten would
+    otherwise append the suffix a second time and invent a third series.
+
+    Returns {folder: new SeriesInstanceUID}.
+    """
+    out: Dict[str, str] = {}
+    for folder, description, series_suffix, uid_suffix in DWI_SERIES_SPECS:
+        target_dir = os.path.join(path_dcm, folder)
+        if not os.path.isdir(target_dir):
+            logger.warning("[postprocess] no %s directory to republish: %s",
+                           folder, target_dir)
+            continue
+
+        names = [x for x in sorted(os.listdir(target_dir)) if x.lower().endswith(".dcm")]
+        if not names:
+            logger.warning("[postprocess] %s holds no DICOM instances", target_dir)
+            continue
+
+        rewritten = 0
+        series_uid = ""
+        for name in names:
+            path = os.path.join(target_dir, name)
+            ds = pydicom.dcmread(path)
+
+            if str(getattr(ds, "SeriesDescription", "")) == description:
+                # Already republished by an earlier pass over this directory.
+                series_uid = str(ds.SeriesInstanceUID)
+                continue
+
+            ds.SeriesDescription = description
+            number = _derive_series_number(getattr(ds, "SeriesNumber", None), series_suffix)
+            if number:
+                ds.SeriesNumber = number
+            ds.SeriesInstanceUID = _derive_uid(getattr(ds, "SeriesInstanceUID", None), uid_suffix)
+            ds.SOPInstanceUID = _derive_uid(getattr(ds, "SOPInstanceUID", None), uid_suffix)
+            # file_meta keeps its own copy of the SOP Instance UID. Leaving it
+            # on the old value makes the file inconsistent with its own dataset,
+            # which some readers reject outright -- _reference misses this.
+            ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+            ds.save_as(path)
+            series_uid = str(ds.SeriesInstanceUID)
+            rewritten += 1
+
+        if not series_uid:
+            logger.error("[postprocess] %s: could not determine a series UID", folder)
+            continue
+        out[folder] = series_uid
+        logger.info("[postprocess] %s -> %r, SeriesInstanceUID %s (%d/%d rewritten)",
+                    folder, description, series_uid, rewritten, len(names))
+    return out
+
+
 def _archive_under_process(staging_dir: str, path_nnunet: str) -> None:
     """Mirror the SEGs and prediction.json into the study's own nnUNet tree.
 
@@ -764,6 +867,12 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
                                  name, arr.shape, pred.shape)
                     return False
 
+            # Before the load: load_and_sort_dicom_files reads the identity
+            # these files carry, and everything after it -- the SEGs' referenced
+            # series, prediction.json -- follows from that. Republishing here
+            # means nothing downstream needs to know the b-values were split.
+            dwi_series_uids = _rewrite_dwi_series(path_dcm)
+
             series_bundles: Dict[str, Tuple[Any, Any, List[Any]]] = {}
             for name in ("DWI1000", "ADC"):
                 series_dir = os.path.join(path_dcm, name)
@@ -836,6 +945,20 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
                     len(series_bundles["ADC"][2])):
                 return False
 
+            # The two republished b-value series. Unlike ADC these do not exist
+            # in the archive under these UIDs at all -- they are ours -- so the
+            # bundle is the only way they get there.
+            for _folder in ("DWI1000", "DWI0"):
+                _uid = dwi_series_uids.get(_folder)
+                if not _uid:
+                    logger.error("[postprocess] %s was not republished; "
+                                 "its images would never reach the archive", _folder)
+                    return False
+                _src = os.path.join(path_dcm, _folder)
+                _n = len([x for x in os.listdir(_src) if x.lower().endswith(".dcm")])
+                if not _stage_reformatted_series(_src, staging_dir, _uid, _n):
+                    return False
+
             inference_id = str(uuid.uuid4())
             payload: Dict[str, Any] = {
                 "inference_id": inference_id,
@@ -848,11 +971,35 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
                 "model_id": INFARCT_MODEL_ID,
                 "patient_id": patient_id,
                 "detections": dwi_detections,
-                "reformatted_series": [{
-                    "series_instance_uid": adc_series_uid,
-                    "series_description": "adc",
-                    "detections": adc_detections,
-                }],
+                # ADC first and unchanged: it carries its own detections and
+                # its position here is what decides which series the viewer puts
+                # in which pane.
+                #
+                # The two DWI entries carry no detections. They are here to get
+                # the images ingested -- that is the only mechanism the
+                # completion callback has for a series the archive does not
+                # already hold. Their detections stay in the top-level list
+                # instead, where the platform types them from the model
+                # (AI_DERIVED_INFARCT_SEG); a detection reaching it through
+                # reformatted_series is stamped AI_DERIVED_ANEURYSM_SEG
+                # unconditionally, which is how the ADC half is already filed.
+                "reformatted_series": [
+                    {
+                        "series_instance_uid": adc_series_uid,
+                        "series_description": "adc",
+                        "detections": adc_detections,
+                    },
+                    {
+                        "series_instance_uid": dwi_series_uids["DWI1000"],
+                        "series_description": "dwi1000",
+                        "detections": [],
+                    },
+                    {
+                        "series_instance_uid": dwi_series_uids["DWI0"],
+                        "series_description": "dwi0",
+                        "detections": [],
+                    },
+                ],
             }
 
             prediction_path = os.path.join(staging_dir, "prediction.json")
