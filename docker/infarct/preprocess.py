@@ -184,6 +184,59 @@ def _derive_clinical_territories(path_nii: str, synthseg_dir: str,
     return produced
 
 
+# The four tags that travel together. GE writes derived ADC series without any
+# of them on roughly one study in ten here, and dcm2niix then has nothing to
+# build an affine from and falls back to 1mm isotropic -- a volume whose shape
+# and spacing are both meaningless.
+_ADC_GEOMETRY_TAGS = (
+    ("PixelSpacing", 0x0028, 0x0030),
+    ("SliceThickness", 0x0018, 0x0050),
+    ("ImagePositionPatient", 0x0020, 0x0032),
+    ("ImageOrientationPatient", 0x0020, 0x0037),
+)
+
+
+def _diagnose_grid_mismatch(process_dir: str, name: str, arr_shape, ref_shape) -> str:
+    """Explain a channel/DWI1000 grid mismatch from the source DICOM.
+
+    The shapes alone do not say whether this is a study that cannot be
+    processed or a conversion that went wrong upstream, and the two need
+    different people to look at them. Deliberately diagnostic only: repairing
+    the geometry belongs in the rename/convert step that produced the NIfTI,
+    not here, where it would silently paper over a bad conversion for one model
+    while every other consumer still reads the broken volume.
+    """
+    import pydicom
+
+    series_dir = os.path.join(process_dir, "nnUNet", "Dicom", name)
+    try:
+        names = [x for x in sorted(os.listdir(series_dir)) if x.lower().endswith(".dcm")]
+        ds = pydicom.dcmread(os.path.join(series_dir, names[0]), stop_before_pixels=True)
+    except Exception as exc:
+        return "could not read %s to diagnose: %s" % (series_dir, exc)
+
+    missing = [t[0] for t in _ADC_GEOMETRY_TAGS if ds.get((t[1], t[2])) is None]
+    if missing:
+        return ("%s DICOM carries none of %s -- dcm2niix had no affine to build "
+                "and fell back to 1mm isotropic, so %s is not a real grid. This "
+                "is an upstream conversion problem: the fix belongs in the "
+                "rename/convert step, not in this pipeline."
+                % (name, "/".join(missing), arr_shape))
+
+    if (len(arr_shape) == 3 and len(ref_shape) == 3
+            and arr_shape[2] == ref_shape[2]
+            and arr_shape[0] % ref_shape[0] == 0
+            and arr_shape[1] % ref_shape[1] == 0):
+        return ("%s is oversampled %dx%d in-plane over the same slices; its "
+                "geometry tags are intact, so this one is resamplable onto the "
+                "DWI1000 grid -- not done here by design."
+                % (name, arr_shape[0] // ref_shape[0], arr_shape[1] // ref_shape[1]))
+
+    return ("%s geometry tags are intact but the grid does not relate to "
+            "DWI1000's by whole-number in-plane sampling; this looks like a "
+            "genuinely different acquisition." % name)
+
+
 def _apply_brain_mask(process_dir: str, merged) -> None:
     """Multiply DWI1000 and ADC by (SynthSeg_merged > 0), as in training.
 
@@ -217,9 +270,11 @@ def _apply_brain_mask(process_dir: str, merged) -> None:
         nii = nib.load(src)
         arr = np.asanyarray(nii.dataobj)
         if arr.shape != ref.shape:
+            why = _diagnose_grid_mismatch(process_dir, name, arr.shape, ref.shape)
+            logger.error("[preprocess] grid mismatch: %s", why)
             raise ValueError(
                 f"{name} is {arr.shape} but DWI1000 is {ref.shape}; these are "
-                f"different grids, not a rounding difference"
+                f"different grids, not a rounding difference. {why}"
             )
         out = nib.Nifti1Image(arr * mask, ref.affine, ref.header)
         nib.save(out, os.path.join(process_dir, f"BET_{name}.nii.gz"))
