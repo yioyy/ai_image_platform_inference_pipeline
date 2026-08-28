@@ -480,9 +480,12 @@ def _rewrite_dwi_series(path_dcm: str) -> Dict[str, str]:
     Idempotent. A postprocess rerun over a directory already rewritten would
     otherwise append the suffix a second time and invent a third series.
 
-    Returns {folder: new SeriesInstanceUID}.
+    Returns {folder: (original SeriesInstanceUID, new SeriesInstanceUID)}. The
+    original is still needed: the platform resolves input_series_instance_uid
+    against Series rows it already holds, and the republished series is our
+    output, not an input it can look up.
     """
-    out: Dict[str, str] = {}
+    out: Dict[str, Tuple[str, str]] = {}
     for folder, description, series_suffix, uid_suffix in DWI_SERIES_SPECS:
         target_dir = os.path.join(path_dcm, folder)
         if not os.path.isdir(target_dir):
@@ -497,14 +500,22 @@ def _rewrite_dwi_series(path_dcm: str) -> Dict[str, str]:
 
         rewritten = 0
         series_uid = ""
+        origin_uid = ""
         for name in names:
             path = os.path.join(target_dir, name)
             ds = pydicom.dcmread(path)
 
             if str(getattr(ds, "SeriesDescription", "")) == description:
                 # Already republished by an earlier pass over this directory.
+                # The original is recoverable because the new UID is the old one
+                # with the suffix appended, and nothing else is.
                 series_uid = str(ds.SeriesInstanceUID)
+                if not origin_uid and series_uid.endswith(uid_suffix):
+                    origin_uid = series_uid[: -len(uid_suffix)]
                 continue
+
+            if not origin_uid:
+                origin_uid = str(getattr(ds, "SeriesInstanceUID", "") or "")
 
             ds.SeriesDescription = description
             number = _derive_series_number(getattr(ds, "SeriesNumber", None), series_suffix)
@@ -523,9 +534,11 @@ def _rewrite_dwi_series(path_dcm: str) -> Dict[str, str]:
         if not series_uid:
             logger.error("[postprocess] %s: could not determine a series UID", folder)
             continue
-        out[folder] = series_uid
-        logger.info("[postprocess] %s -> %r, SeriesInstanceUID %s (%d/%d rewritten)",
-                    folder, description, series_uid, rewritten, len(names))
+        out[folder] = (origin_uid, series_uid)
+        logger.info("[postprocess] %s -> %r, SeriesInstanceUID %s (from %s, "
+                    "%d/%d rewritten)",
+                    folder, description, series_uid, origin_uid or "<unknown>",
+                    rewritten, len(names))
     return out
 
 
@@ -949,7 +962,7 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
             # in the archive under these UIDs at all -- they are ours -- so the
             # bundle is the only way they get there.
             for _folder in ("DWI1000", "DWI0"):
-                _uid = dwi_series_uids.get(_folder)
+                _uid = (dwi_series_uids.get(_folder) or ("", ""))[1]
                 if not _uid:
                     logger.error("[postprocess] %s was not republished; "
                                  "its images would never reach the archive", _folder)
@@ -967,7 +980,14 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
                 # One entry, the DWI1000 series — the samples list only the
                 # series the top-level detections annotate. ADC is declared
                 # through reformatted_series instead.
-                "input_series_instance_uid": [dwi_series_uid] if dwi_series_uid else [],
+                # The series the model read, as the archive knows it: the
+                # platform connects this to existing Series rows, and the
+                # republished b=1000 is our output, which it has never seen.
+                # Naming the new UID here fails the whole prediction insert.
+                "input_series_instance_uid": (
+                    [dwi_series_uids["DWI1000"][0]]
+                    if dwi_series_uids.get("DWI1000", ("", ""))[0] else []
+                ),
                 "model_id": INFARCT_MODEL_ID,
                 "patient_id": patient_id,
                 "detections": dwi_detections,
@@ -990,12 +1010,12 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
                         "detections": adc_detections,
                     },
                     {
-                        "series_instance_uid": dwi_series_uids["DWI1000"],
+                        "series_instance_uid": dwi_series_uids["DWI1000"][1],
                         "series_description": "dwi1000",
                         "detections": [],
                     },
                     {
-                        "series_instance_uid": dwi_series_uids["DWI0"],
+                        "series_instance_uid": dwi_series_uids["DWI0"][1],
                         "series_description": "dwi0",
                         "detections": [],
                     },
