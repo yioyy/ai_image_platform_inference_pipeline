@@ -1009,14 +1009,28 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
                         "series_description": "adc",
                         "detections": adc_detections,
                     },
+                    # kind marks these as imagery we generated, not a MIP
+                    # reformat. The platform files them as
+                    # AI_GENERATED_SOURCE, which has its own keep-branch in the
+                    # study's series list and is excluded when a model's inputs
+                    # are chosen -- without it the republished b=1000 competes
+                    # with the acquired series for the DWI input slot and wins,
+                    # because its row is still seriesNumber -1.
+                    #
+                    # Absent means MIP, so ADC above deliberately carries no
+                    # kind: its row already exists as ORIGINAL and the upsert
+                    # leaves it alone. Unknown values are rejected outright,
+                    # never filed as MIP by default (RADAX-798).
                     {
                         "series_instance_uid": dwi_series_uids["DWI1000"][1],
                         "series_description": "dwi1000",
+                        "kind": "source",
                         "detections": [],
                     },
                     {
                         "series_instance_uid": dwi_series_uids["DWI0"][1],
                         "series_description": "dwi0",
+                        "kind": "source",
                         "detections": [],
                     },
                 ],
