@@ -126,7 +126,29 @@ def aneurysm_postprocess(
             if os.path.isfile(src):
                 shutil.copy(src, os.path.join(output_dir, name))
 
-        synthseg_src = os.path.join(path_nnunet, "SynthSEG.nii.gz")
+        # The registration check wants the ASEG numbering: it asserts the five
+        # landmark labels {2, 3, 41, 42, 16} are present, and nnUNet/SynthSEG.nii.gz
+        # is the PARCELLATION output (98 labels, max 2035) whose 2000-series
+        # cortical parcels replace whole-cortex 3 and 42 entirely. Delivering it
+        # failed every comparison pair with LABELS_MISMATCH.
+        #
+        # ⚠️ Chosen by measurement, not by name: NEW_MRA_BRAIN_synthseg33_1mm and
+        # MRA_BRAIN_synthseg33_native both say "synthseg33" and are the 98-label
+        # parcellation. Only this one carries the landmarks (33 labels, max 60).
+        synthseg_src = os.path.join(
+            process_dir, "synthseg", "MRA_BRAIN_resample_synthseg33_1mm.nii.gz"
+        )
+        if not os.path.isfile(synthseg_src):
+            # The old path, kept as a fallback so a case whose synthseg/ stage
+            # did not run still delivers SOMETHING rather than nothing -- the
+            # platform will refuse it at registration and say why, which beats
+            # an absent file it can only report as not_delivered.
+            logger.warning(
+                "aseg SynthSeg missing (%s); falling back to the parcellation, "
+                "which comparison registration will refuse with LABELS_MISMATCH",
+                synthseg_src,
+            )
+            synthseg_src = os.path.join(path_nnunet, "SynthSEG.nii.gz")
         if os.path.isfile(synthseg_src):
             shutil.copy(synthseg_src, os.path.join(output_dir, "SynthSEG_Aneurysm.nii.gz"))
             # Also copy to Image_nii for dicomseg
