@@ -274,6 +274,32 @@ def aneurysm_postprocess(
                 vessel_json_file,
                 os.path.join(output_dir, "Pred_Vessel_dilated_rdx_vessel_dilated_pred_json.json"),
             )
+        # ── 5b. Native + anatomy NIfTI, beside prediction.json ───────────
+        # The platform ingests these at callback time into
+        # AiPredictionNiftiArtifact / AiPredictionAnatomyArtifact; without them
+        # every prediction imports with both recorded `not_delivered`, and the
+        # comparison pair for that exam can never be built. Step 2 already put
+        # them in output_dir, which the platform does not read.
+        #
+        # ⚠️ ONE anatomy file only: selectAnatomyNifti stores NOTHING when a
+        # model resolves to several candidates, and this process dir holds
+        # SynthSEG_stage1_5class.nii.gz and friends. Name the two files; never
+        # glob.
+        for _src, _name in [
+            (os.path.join(output_dir, "Pred_Aneurysm.nii.gz"), "Pred_Aneurysm.nii.gz"),
+            (os.path.join(output_dir, "SynthSEG_Aneurysm.nii.gz"), "SynthSEG_Aneurysm.nii.gz"),
+        ]:
+            if os.path.isfile(_src):
+                shutil.copy(_src, os.path.join(aneurysm_infer_dir, _name))
+            else:
+                # Loud, but not fatal: the DICOM SEG delivery above is what the
+                # radiologist sees, and it has already succeeded by this point.
+                logger.error(
+                    "native/anatomy NIfTI missing for delivery: %s — the platform "
+                    "will record it not_delivered and no comparison pair can form",
+                    _src,
+                )
+
         logger.info("RAD upload done -> %s", aneurysm_infer_dir)
 
         # ── 6. Notify RAD backend (inference complete) ───────────────────
