@@ -351,17 +351,22 @@ def _compute_region_stats(
 
 
 def _main_seg_slice(mask: np.ndarray) -> int:
-    """Median slice index of the lesion, in the sorted-DICOM slice order.
+    """Key slice of the lesion: the middle one of the slices it is drawn on.
 
     After get_array_to_dcm_axcodes axis 0 is ('S'), i.e. the same axis the
     DICOM stack is sorted along, so this index addresses a source instance
-    directly. Median over voxels rather than over occupied slices, matching
-    _reference dicomseg/infarct.py::_calc_main_slice.
+    directly. Every occupied slice counts once, whatever its area; for an even
+    count the lower-middle slice (toward index 0) is taken. The same rule as
+    dicomseg/utils/base.py::middle_labeled_slice, inlined because this module
+    does not import the dicomseg package.
+
+    Not np.median: with an even count it averages the two middle indices, and
+    on a lesion with a gap that average can name a slice with no lesion on it.
     """
-    indices = np.where(mask)
-    if indices[0].size == 0:
+    slices = np.flatnonzero(np.any(mask, axis=tuple(range(1, mask.ndim))))
+    if slices.size == 0:
         return 0
-    return int(np.median(indices[0]))
+    return int(slices[(slices.size - 1) // 2])
 
 
 def _clear_stale_bundle(output_folder: str) -> None:
