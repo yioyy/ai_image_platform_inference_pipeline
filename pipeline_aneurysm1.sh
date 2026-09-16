@@ -12,6 +12,11 @@ conda activate tf_2_14
 
 # 執行你的 python 程式，並傳入參數
 python /data/4TB1/pipeline/chuan/code/pipeline_aneurysm_tensorflow.py --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4"
+rc=$?
 
 # 停用環境
 conda deactivate 
+# Exit with the pipeline's status, not conda deactivate's. Without this
+# the script always exited 0, a crashed run was recorded as a success, and
+# the platform's inference record stayed NOTIFIED -- the spinning icon.
+exit $rc

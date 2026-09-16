@@ -29,6 +29,11 @@ conda activate "${RADX_CONDA_ENV:-tf_2_14}"
 PY_BIN="${RADX_PYTHON_BIN:-python}"
 PIPELINE_PY="${RADX_PIPELINE_ANEURYSM_PY:-$SCRIPT_DIR/pipeline_aneurysm_tensorflow.py}"
 $PY_BIN "$PIPELINE_PY" --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4"
+rc=$?
 
 # 停用環境
 conda deactivate
+# Exit with the pipeline's status, not conda deactivate's. Without this
+# the script always exited 0, a crashed run was recorded as a success, and
+# the platform's inference record stayed NOTIFIED -- the spinning icon.
+exit $rc
