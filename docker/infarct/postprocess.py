@@ -76,6 +76,12 @@ INFARCT_MODEL_ID = "908f2f2f-4774-4652-91f9-e9b2674de9c6"
 # scaled with acquisition geometry and dropped a whole size class of real
 # lesions. Counting voxels decouples the threshold from voxel size.
 MIN_REGION_VOXELS = 6
+# Fraction of a lesion's voxels that may sit on ADC padding before the whole
+# run is failed. ADC padding is a value, not a gap: it averages in and produces
+# a negative "diffusivity", so a lesion mostly on padding is not a measurement
+# that needs correcting -- it is a finding outside the imaged volume, and the
+# prediction that produced it cannot be trusted either.
+MAX_INVALID_ADC_FRAC = float(os.environ.get("INFARCT_MAX_INVALID_ADC_FRAC", "0.5"))
 
 # Present in Infarct_labels_OHIF only so label -> colour lookups resolve; they
 # are not clinical territories and must not become detections.
@@ -200,6 +206,9 @@ def _stats_for_mask(
     volume_ml = round(voxel_count * voxel_ml, 3)
 
     mean_adc = float(np.mean(adc[mask])) if voxel_count > 0 else 0.0
+    # ADC has no negative values; anything <= 0 inside the mask is padding from
+    # outside the FOV, which averages into mean_adc as if it were tissue.
+    invalid_voxels = int(np.count_nonzero(adc[mask] <= 0)) if voxel_count > 0 else 0
 
     if prob is not None and voxel_count > 0:
         prob_values = prob[mask]
@@ -214,6 +223,8 @@ def _stats_for_mask(
         "voxel_count": voxel_count,
         "volume_ml": volume_ml,
         "mean_adc": round(mean_adc),
+        # Internal only, like voxel_count and mask: never emitted to the platform.
+        "invalid_adc_frac": (invalid_voxels / voxel_count) if voxel_count else 0.0,
         "prob_max": round(prob_max, 2),
         "prob_mean": round(prob_mean, 2),
         "type": "",
@@ -766,6 +777,44 @@ def _write_excel(path_excel: str, study_id: str, lesions: List[Dict[str, Any]]) 
     return out_path
 
 
+def _notify_platform_failed(study_uid: str, model_name: str, reason: str) -> None:
+    """Tell the platform this run failed, so its record stops saying "running".
+
+    The completion POST is the only thing that moves an AiInferenceRecord off
+    NOTIFIED. Without this, every path that declines to deliver — a rejected
+    payload, a result we refuse to stand behind — leaves the study spinning on
+    the worklist until someone clears it by hand.
+
+    inferenceId is a fresh id rather than the one in the bundle we are not
+    delivering: the platform reads a FAILED record carrying an id as "this run
+    is over, a rerun may start now", while a record without one is held for a
+    24h grace in case the run is still alive.
+    """
+    url = os.environ.get("AI_APP_INFERENCE_COMPLETE")
+    if not (url and study_uid):
+        logger.error("[notify] cannot report failure (url=%s study_uid=%s): %s",
+                     bool(url), bool(study_uid), reason)
+        return
+    try:
+        import requests
+
+        r = requests.post(
+            url,
+            json={
+                "studyInstanceUid": study_uid,
+                "modelName": model_name,
+                "result": "failed",
+                "inferenceId": str(uuid.uuid4()),
+            },
+            timeout=30,
+        )
+        logger.info("[notify] %s failed-report -> %s (%d): %s",
+                    model_name, url, r.status_code, reason)
+    except Exception as exc:
+        logger.error("[notify] %s failed-report could not be sent (%s): %s",
+                     model_name, exc, reason)
+
+
 def _notify_platform_complete(prediction_json_path: str, model_name: str) -> None:
     """POST inference completion to the RAD backend (AI_APP_INFERENCE_COMPLETE).
 
@@ -782,6 +831,9 @@ def _notify_platform_complete(prediction_json_path: str, model_name: str) -> Non
     if not url:
         logger.warning("AI_APP_INFERENCE_COMPLETE not set — skip platform notify")
         return
+    # Bound before the try: the except clause reports the failure under it, and
+    # the read of prediction.json that sets it is itself inside the try.
+    study_uid = ""
     try:
         with open(prediction_json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -814,10 +866,23 @@ def _notify_platform_complete(prediction_json_path: str, model_name: str) -> Non
             # platform and nothing to fix here; a 400 is our payload. Logging
             # only the number makes those two look identical, which cost a
             # manual re-POST to tell apart.
-            logger.warning("[notify] %s -> %s (%d): %s",
-                           model_name, url, r.status_code, r.text[:400])
+            # A rejected result is not a delivered result. Saying so leaves the
+            # record FAILED and rerunnable; logging and returning left it
+            # NOTIFIED, and the study span on the worklist until someone looked
+            # (1.2.410...101494075, 2026-09-21).
+            logger.error("[notify] %s -> %s (%d): %s",
+                         model_name, url, r.status_code, r.text[:400])
+            _notify_platform_failed(
+                study_uid, model_name,
+                "platform rejected the result: HTTP %d %s" % (r.status_code, r.text[:200]))
     except Exception as exc:
-        logger.warning("[notify] %s failed: %s", model_name, exc)
+        logger.error("[notify] %s failed: %s", model_name, exc)
+        try:
+            _notify_platform_failed(study_uid, model_name,
+                                    "completion POST failed: %s" % exc)
+        except Exception:
+            logger.error("[notify] %s could not report the failure either",
+                         model_name)
 
 
 def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> bool:
@@ -945,6 +1010,28 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
             # makes that a guarantee rather than an accident. See _label_order
             # for the lexicographic-A10 failure this replaces.
             lesions.sort(key=lambda item: _label_order(item["label"]))
+
+            # Refuse the whole run rather than deliver findings measured on
+            # padding. Checked before any staging, so a rejected study costs no
+            # SEG generation and leaves nothing half-delivered behind.
+            unmeasurable = [
+                item for item in lesions
+                if item.get("invalid_adc_frac", 0.0) >= MAX_INVALID_ADC_FRAC
+            ]
+            if unmeasurable:
+                detail = ", ".join(
+                    "%s %s %.0f%% outside ADC" % (
+                        item["label"], item.get("location", ""),
+                        100.0 * item["invalid_adc_frac"])
+                    for item in unmeasurable
+                )
+                logger.error(
+                    "[postprocess] %s: %d of %d findings lie outside the "
+                    "measurable ADC volume (%s) — failing the run instead of "
+                    "delivering a prediction that cannot be measured",
+                    study_id, len(unmeasurable), len(lesions), detail)
+                _notify_platform_failed(study_uid, MODEL_NAME, detail)
+                return False
 
             # Before any of the delivery work, mirroring aneurysm's step 3. The
             # Excel is a side record; a pandas or openpyxl failure while writing
