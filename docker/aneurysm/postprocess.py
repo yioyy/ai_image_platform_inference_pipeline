@@ -24,6 +24,7 @@ import pathlib
 import shutil
 import sys
 import time
+import uuid
 
 import nibabel as nib
 import numpy as np
@@ -31,6 +32,62 @@ import pandas as pd
 from skimage.measure import regionprops_table
 
 logger = logging.getLogger("aneurysm.postprocess")
+
+
+def _notify_platform_failed(study_uid: str, model_name: str, reason: str) -> None:
+    """Tell the platform this run failed, so the study stops reading "running".
+
+    The completion POST is the only thing that moves an AiInferenceRecord off
+    NOTIFIED; without one, a study we declined to deliver spins on the worklist
+    until somebody notices (1.2.410...118338430 did, overnight).
+
+    A fresh inferenceId, not the one from a bundle we are not delivering: the
+    platform reads FAILED + an id as "this run is over, a rerun may start now",
+    while FAILED without an id is held for a 24h grace.
+    """
+    url = os.environ.get("AI_APP_INFERENCE_COMPLETE")
+    if not (url and study_uid):
+        logger.error("[notify] cannot report failure (url=%s study_uid=%s): %s",
+                     bool(url), bool(study_uid), reason)
+        return
+    try:
+        import requests
+
+        r = requests.post(
+            url,
+            json={
+                "studyInstanceUid": study_uid,
+                "modelName": model_name,
+                "result": "failed",
+                "inferenceId": str(uuid.uuid4()),
+            },
+            timeout=30,
+        )
+        logger.info("[notify] %s failed-report -> %s (%d): %s",
+                    model_name, url, r.status_code, reason)
+    except Exception as exc:
+        logger.error("[notify] %s failed-report could not be sent (%s): %s",
+                     model_name, exc, reason)
+
+
+def _study_uid_from_mra(path_dcm: str) -> str:
+    """StudyInstanceUID off the MRA_BRAIN series, for reporting a failure.
+
+    The bundle's prediction.json carries it, but the paths that fail do so
+    before there is a bundle to read it from.
+    """
+    src = os.path.join(path_dcm, "MRA_BRAIN")
+    try:
+        import pydicom
+
+        for name in sorted(os.listdir(src)):
+            ds = pydicom.dcmread(os.path.join(src, name), stop_before_pixels=True)
+            uid = str(getattr(ds, "StudyInstanceUID", "") or "")
+            if uid:
+                return uid
+    except Exception as exc:
+        logger.error("[postprocess] cannot read StudyInstanceUID from %s: %s", src, exc)
+    return ""
 
 
 def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
@@ -45,6 +102,7 @@ def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
     if not url:
         logger.warning("AI_APP_INFERENCE_COMPLETE not set — skip platform notify")
         return
+    study_uid = ""
     try:
         with open(rdx_json_path) as f:
             data = _json.load(f)
@@ -66,9 +124,24 @@ def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
             },
             timeout=30,
         )
-        logger.info("[notify] %s -> %s (%d)", model_name, url, r.status_code)
+        if r.ok:
+            logger.info("[notify] %s -> %s (%d)", model_name, url, r.status_code)
+        else:
+            # A rejected completion is not a completion. Logging it at INFO, as
+            # this did, made a 400 read exactly like a 200 while the platform
+            # record stayed NOTIFIED and the study span on the worklist.
+            logger.error("[notify] %s -> %s (%d): %s",
+                         model_name, url, r.status_code, r.text[:400])
+            _notify_platform_failed(
+                study_uid, model_name,
+                "platform rejected the result: HTTP %d %s" % (r.status_code, r.text[:200]))
     except Exception as exc:
-        logger.warning("[notify] %s failed: %s", model_name, exc)
+        logger.error("[notify] %s failed: %s", model_name, exc)
+        try:
+            _notify_platform_failed(study_uid, model_name,
+                                    "completion POST failed: %s" % exc)
+        except Exception:
+            logger.error("[notify] %s could not report the failure either", model_name)
 
 # Vessel 16-label → vessel name mapping
 # Vessel 16-label → (location, sub_location) mapping
@@ -111,6 +184,24 @@ def aneurysm_postprocess(
         pred_path = os.path.join(path_nnunet, "Pred.nii.gz")
         if not os.path.isfile(pred_path):
             logger.error("Missing Pred.nii.gz")
+            return False
+
+        # MIP is not optional downstream: the DICOM-SEG builder reads these
+        # series and prediction.json declares them. They are absent only when
+        # mip_utils hit "No vessel signal found — MIP skipped", i.e. the vessel
+        # segmentation came back empty. That is a finding about the study --
+        # usually the series classified as MRA_BRAIN is not a 3D TOF volume --
+        # so it goes to a human as a failure, rather than being delivered
+        # without its reformatted series or dying later inside SimpleITK.
+        missing_mip = [name for name in ("MIP_Pitch", "MIP_Yaw")
+                       if not os.path.isdir(os.path.join(path_dcm, name))]
+        if missing_mip:
+            reason = ("%s DICOM missing — the vessel segmentation produced no "
+                      "signal, so MIP was skipped. Check whether the series "
+                      "sent as MRA_BRAIN is a 3D TOF volume." % ", ".join(missing_mip))
+            logger.error("[postprocess] %s: %s", study_id, reason)
+            _notify_platform_failed(_study_uid_from_mra(path_dcm),
+                                    "aneurysm_model", reason)
             return False
 
         pred_nii = nib.load(pred_path)
