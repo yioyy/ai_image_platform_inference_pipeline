@@ -5,13 +5,16 @@
 # History:
 # 2021/09/23 3rd
 # 初始化 conda 指令
-source /home/tmu/miniconda3/etc/profile.d/conda.sh
+CONDA_SH="${RADX_CONDA_SH:-/home/david/miniconda3/etc/profile.d/conda.sh}"
+# shellcheck source=/dev/null
+source "$CONDA_SH"
 
 # 啟動環境
-conda activate tf_2_14
+conda activate "${RADX_CONDA_ENV:-tf_2_14}"
 
 # 執行你的 python 程式，並傳入參數
-python /data/4TB1/pipeline/chuan/code/pipeline_aneurysm_tensorflow.py --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python "${SCRIPT_DIR}/pipeline_aneurysm_tensorflow.py" --ID "$1" --Inputs "$2" --DicomDir "$3" --Output_folder "$4"
 rc=$?
 
 # 停用環境
