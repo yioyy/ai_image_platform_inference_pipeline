@@ -49,6 +49,12 @@ def cmb_preprocess(
                 logger.error("Missing %s: %s", label, path)
                 return False
 
+        # A rerun must not inherit the previous run's outputs: every later
+        # stage reads them by name and cannot tell whose they are.
+        from rerun_cleanup import reset_process_dir
+
+        reset_process_dir(process_dir, study_id, logger)
+
         os.makedirs(process_dir, exist_ok=True)
 
         # Copy inputs to process dir（永遠覆蓋 — retrigger 時 rename_nifti 可能已更新）

@@ -102,6 +102,12 @@ def aneurysm_preprocess(
                 _study_uid_from_dicom_dir(dicom_dir), "aneurysm_model", reason)
             return False
 
+        # A rerun must not inherit the previous run's outputs: every later
+        # stage reads them by name and cannot tell whose they are.
+        from rerun_cleanup import reset_process_dir
+
+        reset_process_dir(process_dir, study_id, logger)
+
         # --- Create directory structure ---
         path_nnunet = os.path.join(process_dir, "nnUNet")
         path_nii = os.path.join(path_nnunet, "Image_nii")
@@ -114,13 +120,6 @@ def aneurysm_preprocess(
                   path_reslice, path_excel, path_json_out]:
             os.makedirs(d, exist_ok=True)
             os.chmod(d, 0o775)  # group-writable — worker (gid=1001) needs access
-
-        # --- Remove stale predictions ---
-        for stale in ["DeepAneurysm_00001.nii.gz"]:
-            p = os.path.join(process_dir, stale)
-            if os.path.isfile(p):
-                os.remove(p)
-                logger.info("[preprocess] Removed stale: %s", stale)
 
         # --- Copy MRA_BRAIN ---
         shutil.copy(mra_path, os.path.join(process_dir, "MRA_BRAIN.nii.gz"))

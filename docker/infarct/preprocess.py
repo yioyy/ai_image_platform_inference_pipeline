@@ -303,6 +303,12 @@ def infarct_preprocess(
                 logger.error("[preprocess] Missing %s: %s", name, path)
                 return False
 
+        # A rerun must not inherit the previous run's outputs: every later
+        # stage reads them by name and cannot tell whose they are.
+        from rerun_cleanup import reset_process_dir
+
+        reset_process_dir(process_dir, study_id, logger)
+
         path_nnunet = os.path.join(process_dir, "nnUNet")
         path_nii = os.path.join(path_nnunet, "Image_nii")
         path_dcm = os.path.join(path_nnunet, "Dicom")
@@ -317,14 +323,6 @@ def infarct_preprocess(
                   path_brain, path_result, path_excel, path_json_out, synthseg_dir]:
             os.makedirs(d, exist_ok=True)
             os.chmod(d, 0o775)  # group-writable — worker (gid=1001) needs access
-
-        # Stale predictions from an earlier run would otherwise be picked up by
-        # postprocess if inference failed to overwrite them.
-        for stale in ("DeepInfarct_00001.nii.gz", "Prob.nii.gz", "Pred.nii.gz"):
-            p = os.path.join(path_nnunet, stale)
-            if os.path.isfile(p):
-                os.remove(p)
-                logger.info("[preprocess] Removed stale: %s", stale)
 
         for name, path in srcs.items():
             shutil.copy(path, os.path.join(process_dir, f"{name}.nii.gz"))
