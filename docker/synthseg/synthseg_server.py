@@ -633,6 +633,26 @@ def _compute_post_process(
     return outputs
 
 
+def _post_process_paths(out_synthseg: Path, post_process: PostProcess) -> Dict[str, Path]:
+    """The files _compute_post_process is expected to leave for this request.
+
+    Lives next to _cache_complete because the two have to agree: a cache that
+    ignores these files hands the caller a study whose post-process silently
+    never ran.
+    """
+    suffixes = {
+        "none": (),
+        "cmb": (("CMB", "_CMB"),),
+        "dwi": (("DWI", "_DWI"),),
+        "wmh": (("WMH_PVS", "_WMH_PVS"),),
+        "all": (("david", "_david"), ("wm", "_wm"), ("CMB", "_CMB"),
+                ("DWI", "_DWI"), ("WMH_PVS", "_WMH_PVS")),
+    }.get(post_process, ())
+    base = out_synthseg.parent
+    stem = _strip_nii(out_synthseg.name).replace("_synthseg", "")
+    return {key: base / f"{stem}{suffix}.nii.gz" for key, suffix in suffixes}
+
+
 def _cache_complete(
     out_resample: Path,
     out_synthseg: Path,
@@ -647,7 +667,14 @@ def _cache_complete(
         return False
     if run_parcellation and not out_synthseg.exists():
         return False
-    # Post-process outputs are NOT checked here — only core files
+    # Post-process outputs count too. Leaving them out meant a study whose
+    # post-process had crashed was served from cache for ever -- the retry
+    # returned "ok" in milliseconds with the file still missing, so no rerun
+    # could fix it. Study 00166553 failed twice that way on 2026-09-23.
+    if run_parcellation:
+        for path in _post_process_paths(out_synthseg, post_process).values():
+            if not path.exists():
+                return False
     return True
 
 
@@ -762,6 +789,11 @@ def _do_predict(req: PredictRequest) -> PredictResponse:
             outputs = {"resample": str(resample_path), "synthseg33": str(out_synthseg33)}
             if req.run_parcellation:
                 outputs["synthseg"] = str(out_synthseg)
+                for key, path in _post_process_paths(out_synthseg, req.post_process).items():
+                    outputs[key] = str(path)
+                wmh_pvs_orig = output_dir / f"{basename}_WMH_PVS_orig.nii.gz"
+                if wmh_pvs_orig.exists():
+                    outputs["WMH_PVS_orig"] = str(wmh_pvs_orig)
             if out_synthseg33_native.exists():
                 outputs["synthseg33_native"] = str(out_synthseg33_native)
             return PredictResponse(
@@ -819,6 +851,7 @@ def _do_predict(req: PredictRequest) -> PredictResponse:
 
         # ── WM parcellation postprocessing (CPU only, GPU now free) ──────
         post_outputs: dict = {}
+        post_error = ""
         t_pp_done = 0.0
         if req.post_process != "none" and req.run_parcellation:
             t_pp = time.time()
@@ -829,8 +862,12 @@ def _do_predict(req: PredictRequest) -> PredictResponse:
                 post_outputs = {k: str(v) for k, v in post_outputs.items()}
                 t_pp_done = time.time() - t_pp
                 logger.info("Post-process done in %.1f s: %s", t_pp_done, list(post_outputs))
-            except Exception:
+            except Exception as exc:
                 t_pp_done = time.time() - t_pp
+                post_error = (
+                    f"post-process {req.post_process} failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
                 logger.exception(
                     "Post-process failed (core synthseg outputs still saved): "
                     "study=%s seq=%s pp=%s",
@@ -874,7 +911,8 @@ def _do_predict(req: PredictRequest) -> PredictResponse:
             outputs["synthseg33_native"] = str(out_synthseg33_native)
 
         return PredictResponse(
-            status="ok",
+            status="error" if post_error else "ok",
+            error_msg=post_error,
             output_paths=outputs,
             elapsed_time=elapsed,
             timing={
