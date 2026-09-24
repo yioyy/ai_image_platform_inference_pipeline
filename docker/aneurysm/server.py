@@ -114,7 +114,7 @@ PHASE_TIMEOUT_S = int(os.environ.get("ANEURYSM_PHASE_TIMEOUT_S", "900"))
 STUCK_DIR = os.environ.get(
     "ANEURYSM_STUCK_DIR",
     os.path.join(os.environ.get("AI_INFERENCE_RESULT_PATH",
-                                "/home/david/ai-inference-result"), "_stuck"))
+                                os.path.join("/home", os.environ.get("WORKER_USER", "david"), "ai-inference-result")), "_stuck"))
 EXIT_STUCK = 87
 
 

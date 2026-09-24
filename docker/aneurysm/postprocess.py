@@ -282,7 +282,7 @@ def aneurysm_postprocess(
 
         upload_dir = os.environ.get(
             "RADX_UPLOAD_DIR",
-            os.environ.get("AI_INFERENCE_RESULT_PATH", "/home/david/ai-inference-result"),
+            os.environ.get("AI_INFERENCE_RESULT_PATH", os.path.join("/home", os.environ.get("WORKER_USER", "david"), "ai-inference-result")),
         )
         path_dicomseg_n = os.path.join(path_dcm, "Dicom-Seg")
         aneurysm_json_file = os.path.join(path_nnunet, "rdx_aneurysm_pred_json.json")

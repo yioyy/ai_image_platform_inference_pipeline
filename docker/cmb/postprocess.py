@@ -150,7 +150,7 @@ def cmb_postprocess(
         # {prediction.json, <series_uid>_<label>.dcm}.
         upload_dir = os.environ.get(
             "RADX_UPLOAD_DIR",
-            os.environ.get("AI_INFERENCE_RESULT_PATH", "/home/david/ai-inference-result"),
+            os.environ.get("AI_INFERENCE_RESULT_PATH", os.path.join("/home", os.environ.get("WORKER_USER", "david"), "ai-inference-result")),
         )
         with open(rdx_json_path) as f:
             rdx_data = json.load(f)

@@ -58,7 +58,7 @@ MODEL_NAME = "infarct_model"
 # Last-resort upload root. Both containers that already deliver (aneurysm, cmb)
 # use this same literal, and compose sets AI_INFERENCE_RESULT_PATH explicitly on
 # a bind mount, so this value only ever applies to a bare CLI invocation.
-UPLOAD_ROOT_DEFAULT = "/home/david/ai-inference-result"
+UPLOAD_ROOT_DEFAULT = os.path.join("/home", os.environ.get("WORKER_USER", "david"), "ai-inference-result")
 
 # Assigned by the platform 2026-08, fixed for every site rather than minted
 # per deployment: aneurysm and CMB were already hardcoded and infarct now
@@ -134,7 +134,7 @@ def _dataset_json_path() -> str:
     candidates = [
         os.environ.get("INFARCT_DATASET_JSON", ""),
         os.path.join(here, "dataset.json"),
-        "/home/david/pipeline/chuan/code/docker/infarct/dataset.json",
+        os.path.join("/home", os.environ.get("WORKER_USER", "david"), "pipeline/chuan/code/docker/infarct/dataset.json"),
     ]
     for path in candidates:
         if path and os.path.isfile(path):

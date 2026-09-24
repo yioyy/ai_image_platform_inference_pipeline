@@ -56,7 +56,7 @@ def _env(key: str, default: str) -> str:
     return os.environ.get(key, default)
 
 
-PATH_PROCESS = _env("PATH_PROCESS", "/home/david/pipeline/chuan/process")
+PATH_PROCESS = _env("PATH_PROCESS", os.path.join("/home", os.environ.get("WORKER_USER", "david"), "pipeline/chuan/process"))
 PATH_INFARCT_MODEL = _env(
     "PATH_INFARCT_MODEL",
     "/opt/shh_aiplatform-chuan/pipeline/chuan/code/nnUNet/nnUNet_results/"
@@ -78,7 +78,7 @@ PHASE_TIMEOUT_S = int(os.environ.get("INFARCT_PHASE_TIMEOUT_S", "900"))
 STUCK_DIR = os.environ.get(
     "INFARCT_STUCK_DIR",
     os.path.join(os.environ.get("AI_INFERENCE_RESULT_PATH",
-                                "/home/david/ai-inference-result"), "_stuck"))
+                                os.path.join("/home", os.environ.get("WORKER_USER", "david"), "ai-inference-result")), "_stuck"))
 EXIT_STUCK = 87
 
 
