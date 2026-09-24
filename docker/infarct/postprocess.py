@@ -633,6 +633,13 @@ def _deliver_to_platform(staging_dir: str, study_uid: str, inference_id: str) ->
         # are unreferenced by any prediction.json anyone has seen.
         shutil.rmtree(final_dir)
     os.rename(partial_dir, final_dir)
+
+    # The previous run was imported when its callback returned (the platform
+    # imports synchronously and runs are serialized), so its folder is nobody's
+    # input any more.
+    from rerun_cleanup import prune_previous_results
+
+    prune_previous_results(model_root, inference_id, logger)
     return final_dir
 
 

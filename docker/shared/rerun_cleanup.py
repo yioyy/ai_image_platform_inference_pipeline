@@ -85,7 +85,12 @@ def prune_previous_results(model_root: str, keep_inference_id: str, logger) -> N
         return
 
     for name in sorted(os.listdir(model_root)):
-        if name == keep_inference_id:
+        # A dot-name is a bundle still being published: infarct stages into
+        # .<id>.partial and renames it into place. Runs are serialized, so none
+        # should be live here -- but deleting one mid-rename is the one mistake
+        # this function could make that loses a result, so it is not attempted.
+        # The nightly janitor removes stale ones once they are old enough.
+        if name == keep_inference_id or name.startswith("."):
             continue
         old = os.path.join(model_root, name)
         if not os.path.isdir(old):

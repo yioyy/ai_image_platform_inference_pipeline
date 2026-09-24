@@ -175,6 +175,12 @@ def cmb_postprocess(
                 continue
             label = os.path.basename(dcm_file).replace("Pred_CMB_", "").replace(".dcm", "")
             shutil.copy(dcm_file, os.path.join(target_dir, f"{series_uid}_{label}.dcm"))
+        # The previous run was imported when its callback returned (the
+        # platform imports synchronously and runs are serialized), so its
+        # folder is nobody's input any more.
+        from rerun_cleanup import prune_previous_results
+
+        prune_previous_results(os.path.dirname(target_dir), inference_id, logger)
         logger.info("RAD upload done -> %s", target_dir)
 
         # ── 6. Notify RAD backend (inference complete) ───────────────────

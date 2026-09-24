@@ -377,6 +377,15 @@ def aneurysm_postprocess(
                     vessel_seg_uid, vessel_label,
                 )
 
+            # The previous vessel run was imported when its callback returned
+            # (the platform imports synchronously and runs are serialized), so
+            # older folders here are nobody's input any more. aneurysm_model is
+            # NOT pruned here: the comparison backfill may still read an older
+            # aneurysm run, and only the nightly janitor can ask the DB.
+            from rerun_cleanup import prune_previous_results
+
+            prune_previous_results(vessel_model_root, vessel_inference_id, logger)
+
         # Copy RAD JSONs to output_dir (rename_nifti — for legacy consumers)
         shutil.copy(
             aneurysm_json_file,
