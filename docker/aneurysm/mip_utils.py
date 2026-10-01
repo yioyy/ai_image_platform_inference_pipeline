@@ -533,11 +533,20 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
     if not vessel_z_list:
         logger.warning("No vessel signal found — MIP skipped")
         return
-    vessel_img = vessel_img[:, :, vessel_z_list[0]:vessel_z_list[-1]]
-    vessel = vessel[:, :, vessel_z_list[0]:vessel_z_list[-1]]
-    pred = pred[:, :, vessel_z_list[0]:vessel_z_list[-1]]
+    # The vessels' z range, widened to take in every lesion. Cut to the vessels
+    # alone, a lesion lying outside them vanished from every MIP angle, and
+    # the platform then refused the study's whole result for the empty MIP
+    # entries it left behind. Unchanged when every lesion is inside.
+    z_lo, z_hi = vessel_z_list[0], vessel_z_list[-1]
+    pred_z_idx = np.where(np.sum(pred > 0, axis=(0, 1)) > 0)[0]
+    if len(pred_z_idx):
+        z_lo = min(z_lo, int(pred_z_idx[0]))
+        z_hi = max(z_hi, int(pred_z_idx[-1]) + 1)
+    vessel_img = vessel_img[:, :, z_lo:z_hi]
+    vessel = vessel[:, :, z_lo:z_hi]
+    pred = pred[:, :, z_lo:z_hi]
     if create_label_mip:
-        label = label[:, :, vessel_z_list[0]:vessel_z_list[-1]]
+        label = label[:, :, z_lo:z_hi]
     y_i, x_i, z_i = img.shape  # ORIGINAL image shape (for MIP output dimensions)
 
     # ── Read DICOM template + calculate slice thickness (old lines 501-528)
@@ -692,7 +701,9 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
                     pred_one, axis, -float(ang), expand=True, label=True, gpu=gpu_num)
 
                 pred_z = rotated_pred_one.sum(dim=(0, 1))
-                pred_z_list = torch.nonzero(pred_z > 0, as_tuple=False).squeeze()
+                # reshape, not squeeze: one slice deep at this angle made it 0-d
+                # and [0] below an IndexError that cost the study its result
+                pred_z_list = torch.nonzero(pred_z > 0, as_tuple=False).reshape(-1)
 
                 if pred_z_list.numel() == 0:
                     pred_z_list = torch.tensor([1], device=_device)
@@ -767,7 +778,7 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
                         label_one, axis, -float(i), expand=True, label=True, gpu=gpu_num)
 
                     label_z = rotated_label_one.sum(dim=(0, 1))
-                    label_z_list = torch.nonzero(label_z > 0, as_tuple=False).squeeze()
+                    label_z_list = torch.nonzero(label_z > 0, as_tuple=False).reshape(-1)
 
                     if label_z_list.numel() == 0:
                         label_z_list = torch.tensor([1], device='cuda')
@@ -893,7 +904,9 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
             pred_area = np.zeros((new_pred.shape))
             if index_area == 0:
                 pred_area[:, :, 0:3] = predone[:, :, 0:3]
-            elif index_area == new_pred.shape[-1]:
+            elif index_area == new_pred.shape[-1] - 1:
+                # the last angle. Written as == shape[-1] this never held, so the
+                # last angle fell to the branch below and kept 2 frames, not 3
                 pred_area[:, :, -3:] = predone[:, :, -3:]
             else:
                 pred_area[:, :, index_area - 1:index_area + 2] = predone[:, :, index_area - 1:index_area + 2]
@@ -919,7 +932,7 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
                 label_area = np.zeros((new_label.shape))
                 if index_area == 0:
                     label_area[:, :, 0:3] = labelone[:, :, 0:3]
-                elif index_area == new_label.shape[-1]:
+                elif index_area == new_label.shape[-1] - 1:
                     label_area[:, :, -3:] = labelone[:, :, -3:]
                 else:
                     label_area[:, :, index_area - 1:index_area + 2] = labelone[:, :, index_area - 1:index_area + 2]
