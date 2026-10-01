@@ -507,13 +507,15 @@ def _run_synthseg_pytorch(
     parc_output = None
     with _redis_gpu_lock():
         cuda_device = torch.device(f"cuda:{_GPU_N}" if torch.cuda.is_available() else "cpu")
-        if _LAZY_GPU_SWAP and cuda_device.type == "cuda":
-            t0 = time.time()
-            _pt_seg.to(cuda_device)
-            _pt_parc.to(cuda_device)
-            logger.info("[lazy_swap] CPU->GPU %.2fs", time.time() - t0)
-
         try:
+            # Inside the try: a swap that runs out of memory half way still
+            # moves the weights back below, instead of leaving them on the card.
+            if _LAZY_GPU_SWAP and cuda_device.type == "cuda":
+                t0 = time.time()
+                _pt_seg.to(cuda_device)
+                _pt_parc.to(cuda_device)
+                logger.info("[lazy_swap] CPU->GPU %.2fs", time.time() - t0)
+
             device = next(_pt_seg.parameters()).device
 
             # unet2 forward
@@ -740,8 +742,42 @@ def info():
     }
 
 
+def _release_gpu_memory() -> None:
+    """Give the GPU memory a failed request left behind back to the driver.
+
+    An error raised on the GPU -- out of memory, typically, while another model
+    holds the card -- keeps the tensors of every frame it passed through alive
+    for as long as the error itself lives. The empty_cache() calls on the way
+    out run before that, so PyTorch kept the memory cached: SynthSeg went on
+    holding what it had when the error came (1.5 GB in a test on a 16 GB card)
+    until a later request of its own succeeded, and the other models could not
+    have it. By the time this runs the error is gone; gc first, because those
+    frames can hold each other in a cycle.
+    """
+    if _BACKEND != "pytorch":
+        return
+    import gc
+    import torch
+    if not torch.cuda.is_initialized():
+        return
+    before = torch.cuda.memory_reserved(_GPU_N)
+    gc.collect()
+    torch.cuda.empty_cache()
+    after = torch.cuda.memory_reserved(_GPU_N)
+    if after != before:
+        logger.info("[gpu_release] after the failed request: %.0f MiB -> %.0f MiB held",
+                    before / 2**20, after / 2**20)
+
+
 def _do_predict(req: PredictRequest) -> PredictResponse:
     """Core prediction logic — shared by /predict (sync) and /predict/async."""
+    result = _predict_once(req)
+    if result.status != "ok":
+        _release_gpu_memory()
+    return result
+
+
+def _predict_once(req: PredictRequest) -> PredictResponse:
     start = time.time()
 
     try:
