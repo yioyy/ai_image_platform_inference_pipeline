@@ -395,7 +395,8 @@ class _CreateMIP:
         return mip_img_np
 
 
-def _img_to_MIPdicom(dcm, img, tag, series, SE, angle, count, fixed_slice_thickness=None):
+def _img_to_MIPdicom(dcm, img, tag, series, SE, angle, count, fixed_slice_thickness=None,
+                     pixel_spacing=None, derivation=None):
     """Write MIP image into DICOM template. Old lines 184-251.
 
     Args:
@@ -407,6 +408,9 @@ def _img_to_MIPdicom(dcm, img, tag, series, SE, angle, count, fixed_slice_thickn
         angle: angle identifier for SOP UID (string or int)
         count: slice index for IPP calculation
         fixed_slice_thickness: uniform slice thickness for the series
+        pixel_spacing: the MIP's pixel spacing (mm) when it is not the template's,
+            i.e. when the volume was downsampled; None keeps the template's
+        derivation: DerivationDescription to record, e.g. the downsampling
     Returns:
         Modified dcm Dataset
     """
@@ -422,6 +426,10 @@ def _img_to_MIPdicom(dcm, img, tag, series, SE, angle, count, fixed_slice_thickn
     dcm[0x28, 0x0100].value = 16
     dcm[0x28, 0x0101].value = 16
     dcm[0x28, 0x0102].value = 15
+    if pixel_spacing is not None:
+        dcm.PixelSpacing = [format(pixel_spacing, '.6g')] * 2
+    if derivation:
+        dcm.DerivationDescription = derivation
 
     try:
         del dcm[0x28, 0x1050]
@@ -533,11 +541,20 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
     if not vessel_z_list:
         logger.warning("No vessel signal found — MIP skipped")
         return
-    vessel_img = vessel_img[:, :, vessel_z_list[0]:vessel_z_list[-1]]
-    vessel = vessel[:, :, vessel_z_list[0]:vessel_z_list[-1]]
-    pred = pred[:, :, vessel_z_list[0]:vessel_z_list[-1]]
+    # The vessels' z range, widened to take in every lesion. Cut to the vessels
+    # alone, a lesion lying outside them vanished from every MIP angle, and
+    # the platform then refused the study's whole result for the empty MIP
+    # entries it left behind. Unchanged when every lesion is inside.
+    z_lo, z_hi = vessel_z_list[0], vessel_z_list[-1]
+    pred_z_idx = np.where(np.sum(pred > 0, axis=(0, 1)) > 0)[0]
+    if len(pred_z_idx):
+        z_lo = min(z_lo, int(pred_z_idx[0]))
+        z_hi = max(z_hi, int(pred_z_idx[-1]) + 1)
+    vessel_img = vessel_img[:, :, z_lo:z_hi]
+    vessel = vessel[:, :, z_lo:z_hi]
+    pred = pred[:, :, z_lo:z_hi]
     if create_label_mip:
-        label = label[:, :, vessel_z_list[0]:vessel_z_list[-1]]
+        label = label[:, :, z_lo:z_hi]
     y_i, x_i, z_i = img.shape  # ORIGINAL image shape (for MIP output dimensions)
 
     # ── Read DICOM template + calculate slice thickness (old lines 501-528)
@@ -570,31 +587,34 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
         mip_dtype = torch.float32 if os.environ.get('MIP_FP32', '1') == '1' else torch.float64
     _mip_dtype = mip_dtype
 
-    # Fallback for huge volumes: caller passes downsample_xy=512 (or similar) to
-    # reduce MIP peak VRAM. Only x,y axes are resampled; z untouched (MIP is
-    # projection along z-related axes, keep resolution there). Original MRA_BRAIN
-    # axial DICOM is written elsewhere -- not affected. MIP output DICOM will
-    # be at target xy resolution; overlay alignment preserved because pred/vessel
-    # are resampled with same zoom factor. See discussion 2026-07-17.
-    if downsample_xy is not None and (vessel_img.shape[0] > downsample_xy or vessel_img.shape[1] > downsample_xy):
+    # Fallback for huge volumes (create_MIP_pred's last attempt, when even fp16 at
+    # native resolution does not fit): the volume is downsampled by ONE factor on
+    # all three axes, so that the largest x,y side becomes downsample_xy. It must
+    # stay isotropic -- reslice_nifti_pred_nobrain made it so and the rotations
+    # (Yaw in the x,y plane, Pitch in the z,y plane) assume it -- and the MIP's
+    # pixels are then 1/factor times the MRA's spacing, which the MIP DICOM states.
+    # Until 2026-10-01 only x,y were resampled, to 512 each, and the DICOM kept the
+    # MRA's PixelSpacing: rotated projections came out distorted and distances
+    # read on the MIP off by native/512 (AIAA round-2 AI-7). Pred, vessel and
+    # label go through the same zoom, so the overlays stay aligned; the MRA_BRAIN
+    # axial DICOM is written elsewhere and not affected.
+    mip_derivation = None
+    if downsample_xy is not None and max(vessel_img.shape[0], vessel_img.shape[1]) > downsample_xy:
         from scipy.ndimage import zoom as _zoom
-        _yo, _xo = vessel_img.shape[0], vessel_img.shape[1]
-        _zf_y = downsample_xy / _yo
-        _zf_x = downsample_xy / _xo
-        logger.info('[MIP] downsample_xy=%d: (%d,%d,%d) -> (%d,%d,%d)',
-                    downsample_xy, _yo, _xo, vessel_img.shape[2],
-                    downsample_xy, downsample_xy, vessel_img.shape[2])
-        vessel_img = _zoom(vessel_img.astype(np.float32),
-                           (_zf_y, _zf_x, 1), order=1, prefilter=False)
-        vessel = _zoom(vessel.astype(np.int16),
-                       (_zf_y, _zf_x, 1), order=0, prefilter=False)
-        pred = _zoom(pred.astype(np.int16),
-                     (_zf_y, _zf_x, 1), order=0, prefilter=False)
+        _f = downsample_xy / max(vessel_img.shape[0], vessel_img.shape[1])
+        _shape0 = vessel_img.shape
+        vessel_img = _zoom(vessel_img.astype(np.float32), _f, order=1, prefilter=False)
+        vessel = _zoom(vessel.astype(np.int16), _f, order=0, prefilter=False)
+        pred = _zoom(pred.astype(np.int16), _f, order=0, prefilter=False)
         if create_label_mip:
-            label = _zoom(label.astype(np.int16),
-                          (_zf_y, _zf_x, 1), order=0, prefilter=False)
-        # Update y_i, x_i so downstream MIP output canvas uses new size
-        y_i, x_i = downsample_xy, downsample_xy
+            label = _zoom(label.astype(np.int16), _f, order=0, prefilter=False)
+        # the MIP canvas follows the volume; spacing as written to DICOM (DS)
+        y_i, x_i = vessel_img.shape[0], vessel_img.shape[1]
+        calculated_spacing = float(format(calculated_spacing / _f, '.6g'))
+        mip_derivation = ('MIP of the volume downsampled by %.4f on all axes for GPU '
+                          'memory; pixel spacing %s mm' % (_f, format(calculated_spacing, '.6g')))
+        logger.info('[MIP] downsampled by %.4f on all axes for GPU memory: %s -> %s, '
+                    'MIP pixel spacing %.6g mm', _f, _shape0, vessel_img.shape, calculated_spacing)
 
     translated_vessel_img = torch.from_numpy(
         np.swapaxes(vessel_img, 0, -1).copy()).to(dtype=_mip_dtype, device=_device)
@@ -692,7 +712,9 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
                     pred_one, axis, -float(ang), expand=True, label=True, gpu=gpu_num)
 
                 pred_z = rotated_pred_one.sum(dim=(0, 1))
-                pred_z_list = torch.nonzero(pred_z > 0, as_tuple=False).squeeze()
+                # reshape, not squeeze: one slice deep at this angle made it 0-d
+                # and [0] below an IndexError that cost the study its result
+                pred_z_list = torch.nonzero(pred_z > 0, as_tuple=False).reshape(-1)
 
                 if pred_z_list.numel() == 0:
                     pred_z_list = torch.tensor([1], device=_device)
@@ -767,7 +789,7 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
                         label_one, axis, -float(i), expand=True, label=True, gpu=gpu_num)
 
                     label_z = rotated_label_one.sum(dim=(0, 1))
-                    label_z_list = torch.nonzero(label_z > 0, as_tuple=False).squeeze()
+                    label_z_list = torch.nonzero(label_z > 0, as_tuple=False).reshape(-1)
 
                     if label_z_list.numel() == 0:
                         label_z_list = torch.tensor([1], device='cuda')
@@ -849,7 +871,9 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
         dcm_slice = pydicom.dcmread(dcms_tofmra[-1])
         new_dcm_seg = _img_to_MIPdicom(
             dcm_slice, output_pitch, series, series_uid, SE, '00', 0,
-            fixed_slice_thickness=calculated_spacing)
+            fixed_slice_thickness=calculated_spacing,
+            pixel_spacing=calculated_spacing if mip_derivation else None,
+            derivation=mip_derivation)
         new_dcm_seg.save_as(os.path.join(
             path_vesselMIP, series + '_' + str(0).rjust(4, '0') + '_.dcm'))
 
@@ -858,7 +882,9 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
             dcm_slice = pydicom.dcmread(dcms_tofmra[-1])
             new_dcm_seg = _img_to_MIPdicom(
                 dcm_slice, MIP_images[:, :, k], series, series_uid, SE, k, k + 1,
-                fixed_slice_thickness=calculated_spacing)
+                fixed_slice_thickness=calculated_spacing,
+                pixel_spacing=calculated_spacing if mip_derivation else None,
+                derivation=mip_derivation)
             new_dcm_seg.save_as(os.path.join(
                 path_vesselMIP, series + '_' + str(k).rjust(4, '0') + '.dcm'))
 
@@ -893,7 +919,9 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
             pred_area = np.zeros((new_pred.shape))
             if index_area == 0:
                 pred_area[:, :, 0:3] = predone[:, :, 0:3]
-            elif index_area == new_pred.shape[-1]:
+            elif index_area == new_pred.shape[-1] - 1:
+                # the last angle. Written as == shape[-1] this never held, so the
+                # last angle fell to the branch below and kept 2 frames, not 3
                 pred_area[:, :, -3:] = predone[:, :, -3:]
             else:
                 pred_area[:, :, index_area - 1:index_area + 2] = predone[:, :, index_area - 1:index_area + 2]
@@ -919,7 +947,7 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
                 label_area = np.zeros((new_label.shape))
                 if index_area == 0:
                     label_area[:, :, 0:3] = labelone[:, :, 0:3]
-                elif index_area == new_label.shape[-1]:
+                elif index_area == new_label.shape[-1] - 1:
                     label_area[:, :, -3:] = labelone[:, :, -3:]
                 else:
                     label_area[:, :, index_area - 1:index_area + 2] = labelone[:, :, index_area - 1:index_area + 2]
@@ -941,19 +969,25 @@ def _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num, create_label_mi
 
 
 def create_MIP_pred(path_dcm, path_nii, path_png, gpu_num, create_label_mip=False):
-    """Public entry: try env-default MIP dtype first, on CUDA OOM fall back to fp16.
+    """Public entry: env-default MIP dtype first; on CUDA OOM fp16, then fp16 on a
+    volume downsampled to 512 on its largest x,y side.
 
     For very large TOF volumes (e.g. 800x900x800 Siemens Verio 3D-TOF multi-slab
     from 2014-2015) the fp32 pathway can OOM on 3090 24 GB (single rotation
     tensor 4.7 GB, 4 tensors + grid_sample output > 23 GB). fp16 halves that.
     Verified same visual quality on typical volumes but slightly noisier at
     boundaries -- acceptable for MIP display.
+
+    fp16 alone was not enough for the largest (583M voxels after reslice, 24 GB
+    card), hence the downsampled last attempt; _create_MIP_pred_impl keeps its
+    geometry right (one factor on all axes, the MIP DICOM's PixelSpacing scaled
+    with it). Before 2026-10-01 the fp16 attempt was already downsampled, and
+    wrongly (AIAA round-2 AI-7). When the last attempt fails too, the MIP fails
+    and so does the case.
     """
     _env_dtype = torch.float32 if os.environ.get('MIP_FP32', '1') == '1' else torch.float64
-    # attempts: (dtype, downsample_xy). Ordered from best-quality to most aggressive
-    # memory reduction. Native res first; fp16 + xy=512 fallback for huge volumes
-    # (e.g. Siemens Verio 3D-TOF multi-slab from 2014-2015 with 800+^3 voxels).
-    attempts = [(_env_dtype, None), (torch.float16, 512)]
+    # attempts: (dtype, downsample_xy), from best quality to least memory
+    attempts = [(_env_dtype, None), (torch.float16, None), (torch.float16, 512)]
     for i, (dtype, downsample) in enumerate(attempts):
         try:
             return _create_MIP_pred_impl(path_dcm, path_nii, path_png, gpu_num,
@@ -963,8 +997,8 @@ def create_MIP_pred(path_dcm, path_nii, path_png, gpu_num, create_label_mip=Fals
         except torch.cuda.OutOfMemoryError as e:
             is_last = i == len(attempts) - 1
             if is_last:
-                logger.error('[MIP] all fallbacks exhausted (last: dtype=%s downsample=%s); '
-                             'giving up. %s', dtype, downsample, e)
+                logger.error('[MIP] not enough GPU memory even downsampled to %s in fp16; '
+                             'giving up. %s', downsample, e)
                 raise
             logger.warning('[MIP] OOM with dtype=%s downsample_xy=%s (attempt %d/%d), '
                            'retrying with next: %s', dtype, downsample,

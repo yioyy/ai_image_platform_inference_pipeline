@@ -21,7 +21,7 @@ except ImportError:
 
 URL = os.environ.get("AI_APP_INFERENCE_COMPLETE",
                      "http://localhost:4000/v1/ai-inference/inference-complete")
-ROOT = "/home/david/ai-inference-result"
+ROOT = os.environ.get("AI_INFERENCE_RESULT_PATH", os.path.join("/home", os.environ.get("WORKER_USER", "david"), "ai-inference-result"))
 # Include cases from 2026-06-29 00:00 Asia/Taipei (== 2026-06-28 16:00 UTC).
 SINCE = datetime(2026, 6, 28, 16, 0, 0, tzinfo=timezone.utc)
 MODEL_NAME = "vessel_model"

@@ -24,6 +24,7 @@ import pathlib
 import shutil
 import sys
 import time
+import uuid
 
 import nibabel as nib
 import numpy as np
@@ -31,6 +32,62 @@ import pandas as pd
 from skimage.measure import regionprops_table
 
 logger = logging.getLogger("aneurysm.postprocess")
+
+
+def _notify_platform_failed(study_uid: str, model_name: str, reason: str) -> None:
+    """Tell the platform this run failed, so the study stops reading "running".
+
+    The completion POST is the only thing that moves an AiInferenceRecord off
+    NOTIFIED; without one, a study we declined to deliver spins on the worklist
+    until somebody notices (1.2.410...118338430 did, overnight).
+
+    A fresh inferenceId, not the one from a bundle we are not delivering: the
+    platform reads FAILED + an id as "this run is over, a rerun may start now",
+    while FAILED without an id is held for a 24h grace.
+    """
+    url = os.environ.get("AI_APP_INFERENCE_COMPLETE")
+    if not (url and study_uid):
+        logger.error("[notify] cannot report failure (url=%s study_uid=%s): %s",
+                     bool(url), bool(study_uid), reason)
+        return
+    try:
+        import requests
+
+        r = requests.post(
+            url,
+            json={
+                "studyInstanceUid": study_uid,
+                "modelName": model_name,
+                "result": "failed",
+                "inferenceId": str(uuid.uuid4()),
+            },
+            timeout=30,
+        )
+        logger.info("[notify] %s failed-report -> %s (%d): %s",
+                    model_name, url, r.status_code, reason)
+    except Exception as exc:
+        logger.error("[notify] %s failed-report could not be sent (%s): %s",
+                     model_name, exc, reason)
+
+
+def _study_uid_from_mra(path_dcm: str) -> str:
+    """StudyInstanceUID off the MRA_BRAIN series, for reporting a failure.
+
+    The bundle's prediction.json carries it, but the paths that fail do so
+    before there is a bundle to read it from.
+    """
+    src = os.path.join(path_dcm, "MRA_BRAIN")
+    try:
+        import pydicom
+
+        for name in sorted(os.listdir(src)):
+            ds = pydicom.dcmread(os.path.join(src, name), stop_before_pixels=True)
+            uid = str(getattr(ds, "StudyInstanceUID", "") or "")
+            if uid:
+                return uid
+    except Exception as exc:
+        logger.error("[postprocess] cannot read StudyInstanceUID from %s: %s", src, exc)
+    return ""
 
 
 def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
@@ -45,6 +102,7 @@ def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
     if not url:
         logger.warning("AI_APP_INFERENCE_COMPLETE not set — skip platform notify")
         return
+    study_uid = ""
     try:
         with open(rdx_json_path) as f:
             data = _json.load(f)
@@ -66,9 +124,24 @@ def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
             },
             timeout=30,
         )
-        logger.info("[notify] %s -> %s (%d)", model_name, url, r.status_code)
+        if r.ok:
+            logger.info("[notify] %s -> %s (%d)", model_name, url, r.status_code)
+        else:
+            # A rejected completion is not a completion. Logging it at INFO, as
+            # this did, made a 400 read exactly like a 200 while the platform
+            # record stayed NOTIFIED and the study span on the worklist.
+            logger.error("[notify] %s -> %s (%d): %s",
+                         model_name, url, r.status_code, r.text[:400])
+            _notify_platform_failed(
+                study_uid, model_name,
+                "platform rejected the result: HTTP %d %s" % (r.status_code, r.text[:200]))
     except Exception as exc:
-        logger.warning("[notify] %s failed: %s", model_name, exc)
+        logger.error("[notify] %s failed: %s", model_name, exc)
+        try:
+            _notify_platform_failed(study_uid, model_name,
+                                    "completion POST failed: %s" % exc)
+        except Exception:
+            logger.error("[notify] %s could not report the failure either", model_name)
 
 # Vessel 16-label → vessel name mapping
 # Vessel 16-label → (location, sub_location) mapping
@@ -113,6 +186,24 @@ def aneurysm_postprocess(
             logger.error("Missing Pred.nii.gz")
             return False
 
+        # MIP is not optional downstream: the DICOM-SEG builder reads these
+        # series and prediction.json declares them. They are absent only when
+        # mip_utils hit "No vessel signal found — MIP skipped", i.e. the vessel
+        # segmentation came back empty. That is a finding about the study --
+        # usually the series classified as MRA_BRAIN is not a 3D TOF volume --
+        # so it goes to a human as a failure, rather than being delivered
+        # without its reformatted series or dying later inside SimpleITK.
+        missing_mip = [name for name in ("MIP_Pitch", "MIP_Yaw")
+                       if not os.path.isdir(os.path.join(path_dcm, name))]
+        if missing_mip:
+            reason = ("%s DICOM missing — the vessel segmentation produced no "
+                      "signal, so MIP was skipped. Check whether the series "
+                      "sent as MRA_BRAIN is a 3D TOF volume." % ", ".join(missing_mip))
+            logger.error("[postprocess] %s: %s", study_id, reason)
+            _notify_platform_failed(_study_uid_from_mra(path_dcm),
+                                    "aneurysm_model", reason)
+            return False
+
         pred_nii = nib.load(pred_path)
         pred_arr = np.asanyarray(pred_nii.dataobj)
 
@@ -126,7 +217,29 @@ def aneurysm_postprocess(
             if os.path.isfile(src):
                 shutil.copy(src, os.path.join(output_dir, name))
 
-        synthseg_src = os.path.join(path_nnunet, "SynthSEG.nii.gz")
+        # The registration check wants the ASEG numbering: it asserts the five
+        # landmark labels {2, 3, 41, 42, 16} are present, and nnUNet/SynthSEG.nii.gz
+        # is the PARCELLATION output (98 labels, max 2035) whose 2000-series
+        # cortical parcels replace whole-cortex 3 and 42 entirely. Delivering it
+        # failed every comparison pair with LABELS_MISMATCH.
+        #
+        # ⚠️ Chosen by measurement, not by name: NEW_MRA_BRAIN_synthseg33_1mm and
+        # MRA_BRAIN_synthseg33_native both say "synthseg33" and are the 98-label
+        # parcellation. Only this one carries the landmarks (33 labels, max 60).
+        synthseg_src = os.path.join(
+            process_dir, "synthseg", "MRA_BRAIN_resample_synthseg33_1mm.nii.gz"
+        )
+        if not os.path.isfile(synthseg_src):
+            # The old path, kept as a fallback so a case whose synthseg/ stage
+            # did not run still delivers SOMETHING rather than nothing -- the
+            # platform will refuse it at registration and say why, which beats
+            # an absent file it can only report as not_delivered.
+            logger.warning(
+                "aseg SynthSeg missing (%s); falling back to the parcellation, "
+                "which comparison registration will refuse with LABELS_MISMATCH",
+                synthseg_src,
+            )
+            synthseg_src = os.path.join(path_nnunet, "SynthSEG.nii.gz")
         if os.path.isfile(synthseg_src):
             shutil.copy(synthseg_src, os.path.join(output_dir, "SynthSEG_Aneurysm.nii.gz"))
             # Also copy to Image_nii for dicomseg
@@ -169,7 +282,7 @@ def aneurysm_postprocess(
 
         upload_dir = os.environ.get(
             "RADX_UPLOAD_DIR",
-            os.environ.get("AI_INFERENCE_RESULT_PATH", "/home/david/ai-inference-result"),
+            os.environ.get("AI_INFERENCE_RESULT_PATH", os.path.join("/home", os.environ.get("WORKER_USER", "david"), "ai-inference-result")),
         )
         path_dicomseg_n = os.path.join(path_dcm, "Dicom-Seg")
         aneurysm_json_file = os.path.join(path_nnunet, "rdx_aneurysm_pred_json.json")
@@ -264,6 +377,15 @@ def aneurysm_postprocess(
                     vessel_seg_uid, vessel_label,
                 )
 
+            # The previous vessel run was imported when its callback returned
+            # (the platform imports synchronously and runs are serialized), so
+            # older folders here are nobody's input any more. aneurysm_model is
+            # NOT pruned here: the comparison backfill may still read an older
+            # aneurysm run, and only the nightly janitor can ask the DB.
+            from rerun_cleanup import prune_previous_results
+
+            prune_previous_results(vessel_model_root, vessel_inference_id, logger)
+
         # Copy RAD JSONs to output_dir (rename_nifti — for legacy consumers)
         shutil.copy(
             aneurysm_json_file,
@@ -274,6 +396,32 @@ def aneurysm_postprocess(
                 vessel_json_file,
                 os.path.join(output_dir, "Pred_Vessel_dilated_rdx_vessel_dilated_pred_json.json"),
             )
+        # ── 5b. Native + anatomy NIfTI, beside prediction.json ───────────
+        # The platform ingests these at callback time into
+        # AiPredictionNiftiArtifact / AiPredictionAnatomyArtifact; without them
+        # every prediction imports with both recorded `not_delivered`, and the
+        # comparison pair for that exam can never be built. Step 2 already put
+        # them in output_dir, which the platform does not read.
+        #
+        # ⚠️ ONE anatomy file only: selectAnatomyNifti stores NOTHING when a
+        # model resolves to several candidates, and this process dir holds
+        # SynthSEG_stage1_5class.nii.gz and friends. Name the two files; never
+        # glob.
+        for _src, _name in [
+            (os.path.join(output_dir, "Pred_Aneurysm.nii.gz"), "Pred_Aneurysm.nii.gz"),
+            (os.path.join(output_dir, "SynthSEG_Aneurysm.nii.gz"), "SynthSEG_Aneurysm.nii.gz"),
+        ]:
+            if os.path.isfile(_src):
+                shutil.copy(_src, os.path.join(aneurysm_infer_dir, _name))
+            else:
+                # Loud, but not fatal: the DICOM SEG delivery above is what the
+                # radiologist sees, and it has already succeeded by this point.
+                logger.error(
+                    "native/anatomy NIfTI missing for delivery: %s — the platform "
+                    "will record it not_delivered and no comparison pair can form",
+                    _src,
+                )
+
         logger.info("RAD upload done -> %s", aneurysm_infer_dir)
 
         # ── 6. Notify RAD backend (inference complete) ───────────────────

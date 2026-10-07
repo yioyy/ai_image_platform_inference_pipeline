@@ -9,8 +9,10 @@
 
 set -e
 
-source /home/tmu/miniconda3/etc/profile.d/conda.sh
-conda activate tf_2_14
+CONDA_SH="${RADX_CONDA_SH:-/home/david/miniconda3/etc/profile.d/conda.sh}"
+# shellcheck source=/dev/null
+source "$CONDA_SH"
+conda activate "${RADX_CONDA_ENV:-tf_2_14}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

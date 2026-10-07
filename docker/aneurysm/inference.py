@@ -292,14 +292,23 @@ def _apply_neck_filter(process_dir, synthseg_native_path, z_margin):
         else:
             kept.append(int(lab))
 
+    renumbered = {}
     if dropped:
-        for lab in dropped:
-            pred_arr[pred_arr == lab] = 0
-        out = nib.Nifti1Image(pred_arr.astype(pred_img.get_data_dtype()),
+        # What is left is renumbered 1..m, in its original order. Everything
+        # after this stage counts the lesions and then reads labels 1..m (the
+        # Excel's Aneurysm_Number, the MIP's range(pred_num)): with a gap --
+        # 1, 2, 4 once 3 was dropped -- the last lesion went out as 0 mm, 0 %,
+        # no location and key slice 0 (four studies on david, 2026-09-10..22).
+        out_arr = np.zeros_like(pred_arr)
+        for new, lab in enumerate(kept, start=1):
+            out_arr[pred_arr == lab] = new
+            if new != lab:
+                renumbered[lab] = new
+        out = nib.Nifti1Image(out_arr.astype(pred_img.get_data_dtype()),
                               pred_img.affine, pred_img.header)
         nib.save(out, pred_path)
 
-    return {"dropped": dropped, "kept": kept,
+    return {"dropped": dropped, "kept": kept, "renumbered": renumbered,
             "brain_edge": brain_edge, "cutoff": cutoff,
             "si_axis": si_axis, "direction": direction}
 
@@ -431,14 +440,15 @@ def aneurysm_inference(
                         shutil.copy(_native, _dst)
                     _stat = _apply_neck_filter(process_dir, _native, _z_margin)
                     logger.info(
-                        "[C.5] synthseg+neck-filter done (%.0fs) si_axis=%s dir=%s brain_edge=%s cutoff=%s dropped=%s kept=%s",
+                        "[C.5] synthseg+neck-filter done (%.0fs) si_axis=%s dir=%s brain_edge=%s cutoff=%s dropped=%s kept=%s renumbered=%s",
                         time.time() - t_syn,
                         _stat.get("si_axis"),
                         _stat.get("direction"),
                         _stat.get("brain_edge"),
                         _stat.get("cutoff"),
                         _stat.get("dropped"),
-                        _stat.get("kept"))
+                        _stat.get("kept"),
+                        _stat.get("renumbered"))
                 else:
                     logger.warning("[C.5] synthseg returned no native output; skip filter")
             except Exception as _exc:
