@@ -79,7 +79,14 @@ def warmup_vessel16() -> None:
     else:
         import onnxruntime as ort
         onnx_path = os.path.join(onnx_dir, "vessel_16label_resunet.onnx")
-        sess = ort.InferenceSession(onnx_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+        # ORT's default CUDA arena doubles whenever it grows and never gives memory back: about
+        # 4 GB held after the first case, 8 GB from the second on. A 16 GB card then has too
+        # little left for nnUNet and every case after the first runs out of memory. Grow by
+        # what a run asks for, and hand it back after each run (run options in serve below).
+        # Measured on 4 cases in one process: no slower; the process holds 2 GB between cases, not 10.
+        sess = ort.InferenceSession(onnx_path, providers=[
+            ("CUDAExecutionProvider", {"arena_extend_strategy": "kSameAsRequested"}),
+            "CPUExecutionProvider"])
         _VESSEL16_STATE = ("onnx", sess, sess.get_inputs()[0].name)
         logger.info("[vessel16] warmed (ONNX Runtime CUDA)")
 
@@ -104,14 +111,19 @@ def _get_vessel16_serve():
                 return R(out.cpu().numpy())
         return TorchModelWrapper()
     else:
+        import onnxruntime as ort
         _sess = model_or_sess
         _inp_name = device_or_name
+        _run_options = ort.RunOptions()
+        if "CUDAExecutionProvider" in _sess.get_providers():
+            _run_options.add_run_config_entry("memory.enable_memory_arena_shrinkage", "gpu:0")
         class OnnxModelWrapper:
             def serve(self, x):
                 class R:
                     def __init__(s, v): s._v = v
                     def numpy(s): return s._v
-                return R(_sess.run(None, {_inp_name: np.asarray(x, dtype=np.float32)})[0])
+                return R(_sess.run(None, {_inp_name: np.asarray(x, dtype=np.float32)},
+                                   run_options=_run_options)[0])
         return OnnxModelWrapper()
 
 
