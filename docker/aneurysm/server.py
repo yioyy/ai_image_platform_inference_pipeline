@@ -247,11 +247,42 @@ def _run_preprocess(req: PredictRequest, start: float) -> PredictResponse:
     return PredictResponse(status="ok", elapsed_time=time.time() - start)
 
 
+def _release_gpu_memory() -> None:
+    """Give the GPU back what a failed inference left cached.
+
+    A failure inside inference (a CUDA out-of-memory on a 16 GB card, say) keeps
+    the tensors of the frames that raised alive for as long as the error lives;
+    PyTorch then keeps their memory cached. The process went on holding 13.5 GB
+    after such a failure on an RTX 5060 Ti until its next request, so SynthSeg
+    and that next case had too little (2026-10-12). Called once the error is
+    gone; gc first, because those frames can hold each other in a cycle. Same as
+    SynthSeg's after-failure release (chuan ca29d1c). Best effort: after a sticky
+    CUDA error empty_cache() raises it again, and that must not turn the failed
+    request's own answer into an HTTP 500.
+    """
+    import gc
+    import torch
+    try:
+        if not torch.cuda.is_available() or not torch.cuda.is_initialized():
+            return
+        before = torch.cuda.memory_reserved()
+        gc.collect()
+        torch.cuda.empty_cache()
+        after = torch.cuda.memory_reserved()
+    except Exception as exc:
+        logger.warning("[gpu_release] could not release GPU memory after the failed inference: %s", exc)
+        return
+    if after != before:
+        logger.info("[gpu_release] after the failed inference: %.0f MiB -> %.0f MiB held",
+                    before / 2**20, after / 2**20)
+
+
 def _run_inference(req: PredictRequest, start: float) -> PredictResponse:
     process_dir = os.path.join(PATH_PROCESS, "Deep_Aneurysm", req.study_id)
     dicom_dir = req.dicom_dirs[0] if req.dicom_dirs else ""
 
     logger.info("[aneurysm] inference start (GPU %d) [in-process]", req.gpu_id)
+    error_msg = "Inference returned False"
     try:
         # Watchdog inside the lock, so the clock covers only real work and not
         # time spent queued behind another request.
@@ -267,11 +298,11 @@ def _run_inference(req: PredictRequest, start: float) -> PredictResponse:
             )
     except Exception as exc:
         logger.exception("[aneurysm] inference exception")
-        return PredictResponse(status="error", elapsed_time=time.time() - start,
-                               error_msg=f"Inference exception: {exc}")
+        ok, error_msg = False, f"Inference exception: {exc}"
     if not ok:
+        _release_gpu_memory()
         return PredictResponse(status="error", elapsed_time=time.time() - start,
-                               error_msg="Inference returned False")
+                               error_msg=error_msg)
 
     pred_path = pathlib.Path(process_dir) / "nnUNet" / "Pred.nii.gz"
     if not pred_path.exists():
