@@ -665,6 +665,18 @@ def _publish_to_output_folder(staging_dir: str, output_folder: str) -> None:
         os.replace(src, dst)
 
 
+def _platform_location(name: str) -> str:
+    """The region as the platform shows it: "L. Putamen" -> "left Putamen", "R. Putamen" ->
+    "right Putamen", the way CMB writes its side (2026-10-15); other names unchanged. Only what
+    leaves for the platform (the detection's location, the SEG's segment label) uses it:
+    colours, the report and Infarct_Pred_list.xlsx keep the dataset.json name they look up."""
+    if name.startswith("L. "):
+        return "left " + name[3:]
+    if name.startswith("R. "):
+        return "right " + name[3:]
+    return name
+
+
 def _emit_series(
     utils,
     series_name: str,
@@ -691,7 +703,8 @@ def _emit_series(
         color = TOTAL_COLOR if lesion["label"] == "Total" else colors.get(
             location, REGION_FALLBACK_COLOR)
         template = utils.get_dicom_seg_template(
-            f"Infarct_{series_name}", {1: {"SegmentLabel": location, "color": color}})
+            f"Infarct_{series_name}",
+            {1: {"SegmentLabel": _platform_location(location), "color": color}})
         dcm_seg = utils.make_dicomseg_file(
             lesion["mask"].astype("uint8"), image, first_dcm, source_images, template)
 
@@ -723,7 +736,7 @@ def _emit_series(
         if lesion["label"] == "Total":
             detection["role"] = "total"
         else:
-            detection["location"] = location
+            detection["location"] = _platform_location(location)
         detection.update({
             "volume_ml": lesion["volume_ml"],
             "mean_adc": lesion["mean_adc"],

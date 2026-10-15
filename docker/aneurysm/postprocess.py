@@ -143,15 +143,19 @@ def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
         except Exception:
             logger.error("[notify] %s could not report the failure either", model_name)
 
-# Vessel 16-label → vessel name mapping
-# Vessel 16-label → (location, sub_location) mapping
-# Exact copy from old pipeline util_aneurysm.py decode_location()
+# Vessel 16-label → (location, sub_location) mapping, kept equal to util_aneurysm.py decode_location().
+# ICA and MCA, sub-locations included (Pcom is ICA 'p'), carry the side the way CMB writes it:
+# "left ICA", "right MCA" (2026-10-15). Which label is which side, measured on 40 cases by the
+# label's centroid in RAS: 1 ICA, 2 MCA, 8 Pcom on the left; 3, 4, 9 on the right.
 def _decode_vessel_location(val):
-    if val in (1, 3):   return 'ICA', ''
-    elif val in (2, 4): return 'MCA', ''
+    if val == 1:        return 'left ICA', ''
+    elif val == 3:      return 'right ICA', ''
+    elif val == 2:      return 'left MCA', ''
+    elif val == 4:      return 'right MCA', ''
     elif val in (5, 6): return 'ACA', '1'
     elif val == 7:      return 'ACA', ''
-    elif val in (8, 9): return 'ICA', 'p'
+    elif val == 8:      return 'left ICA', 'p'
+    elif val == 9:      return 'right ICA', 'p'
     elif val in (10, 11): return 'PCA', ''
     elif val in (12, 13): return 'BA', 's'
     elif val == 14:     return 'BA', ''

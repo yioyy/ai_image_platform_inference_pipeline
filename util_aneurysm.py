@@ -1162,16 +1162,24 @@ class AneurysmPipeline:
 
     @staticmethod
     def decode_location(val):
-        if val in (1, 3):
-            return 'ICA', ''
-        elif val in (2, 4):
-            return 'MCA', ''
+        # ICA and MCA (Pcom = ICA 'p' included) carry the side, as CMB writes it (2026-10-15):
+        # labels 1, 2, 8 are on the left, 3, 4, 9 on the right (centroids in RAS, 40 cases).
+        if val == 1:
+            return 'left ICA', ''
+        elif val == 3:
+            return 'right ICA', ''
+        elif val == 2:
+            return 'left MCA', ''
+        elif val == 4:
+            return 'right MCA', ''
         elif val in (5, 6):
             return 'ACA', '1'
         elif val == 7:
             return 'ACA', ''
-        elif val in (8, 9):
-            return 'ICA', 'p'
+        elif val == 8:
+            return 'left ICA', 'p'
+        elif val == 9:
+            return 'right ICA', 'p'
         elif val in (10, 11):
             return 'PCA', ''
         elif val in (12, 13):
