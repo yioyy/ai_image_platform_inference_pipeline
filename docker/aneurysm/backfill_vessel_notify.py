@@ -56,7 +56,7 @@ for path in files:
     if ts < SINCE:
         skipped_old += 1
         continue
-    todo.append((ts, study_uid, inference_id, path))
+    todo.append((ts, study_uid, inference_id, path, str(data.get("platform_run_id") or "")))
 
 print(f"  skipped_bad (parse or missing fields) : {skipped_bad}")
 print(f"  skipped_old (< 2026-06-29 UTC)        : {skipped_old}")
@@ -64,20 +64,25 @@ print(f"  to notify                             : {len(todo)}")
 
 if DRY_RUN:
     print("\n[DRY_RUN] first 10 to notify:")
-    for ts, s, i, p in todo[:10]:
+    for ts, s, i, p, _ in todo[:10]:
         print(f"  ts={ts.isoformat()}  study={s[-20:]}  infer={i[:8]}...")
     print("\nSet DRY_RUN=0 to actually POST.")
     sys.exit(0)
 
 print(f"\nPOSTing to {URL} ...")
 ok, bad = 0, 0
-for ts, study_uid, inference_id, path in todo:
+for ts, study_uid, inference_id, path, platform_run_id in todo:
     payload = {
         "studyInstanceUid": study_uid,
         "modelName": MODEL_NAME,
         "result": "success",
         "inferenceId": inference_id,
     }
+    # the platform's id for the send this result answers (RADAX-1032), as the
+    # prediction recorded it; only when it has one -- the platform refuses a
+    # field it does not know
+    if platform_run_id:
+        payload["platform_run_id"] = platform_run_id
     try:
         r = requests.post(URL, json=payload, timeout=30)
         if r.status_code // 100 == 2:

@@ -99,8 +99,11 @@ def aneurysm_preprocess(
             logger.error("[preprocess] %s: %s", study_id, reason)
             from postprocess import _notify_platform_failed
 
+            # the id only when there is one: an installed kit replaces this file
+            # and postprocess.py separately, and an old one's notifier takes three
             _notify_platform_failed(
-                _study_uid_from_dicom_dir(dicom_dir), "aneurysm_model", reason, platform_run_id)
+                _study_uid_from_dicom_dir(dicom_dir), "aneurysm_model", reason,
+                **({"platform_run_id": platform_run_id} if platform_run_id else {}))
             return False
 
         # A rerun must not inherit the previous run's outputs: every later
