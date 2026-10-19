@@ -224,6 +224,18 @@ def health():
 
 # ── Phase functions (in-process direct calls) ─────────────────────────────
 
+def _run_id(req: PredictRequest) -> dict:
+    """platform_run_id as keyword arguments, and only when the request carried one.
+
+    An installed kit replaces this file, base_server.py and the phase modules one
+    by one (inference_aneurysm/start.sh), so one it could not replace keeps the
+    old field set or the old signature. A request without the id (clinical) must
+    still run against that.
+    """
+    rid = getattr(req, "platform_run_id", "")
+    return {"platform_run_id": rid} if rid else {}
+
+
 def _run_preprocess(req: PredictRequest, start: float) -> PredictResponse:
     process_dir = os.path.join(PATH_PROCESS, "Deep_Aneurysm", req.study_id)
     mra_path = req.input_paths[0] if req.input_paths else ""
@@ -236,7 +248,7 @@ def _run_preprocess(req: PredictRequest, start: float) -> PredictResponse:
     logger.info("[aneurysm] preprocess start")
     try:
         ok = aneurysm_preprocess(req.study_id, mra_path, dicom_dir, process_dir,
-                                 platform_run_id=req.platform_run_id)
+                                 **_run_id(req))
     except Exception as exc:
         logger.exception("[aneurysm] preprocess exception")
         return PredictResponse(status="error", elapsed_time=time.time() - start,
@@ -326,8 +338,7 @@ def _run_postprocess(req: PredictRequest, start: float) -> PredictResponse:
     try:
         ok = aneurysm_postprocess(
             req.study_id, process_dir, req.output_folder,
-            group_id=gid, input_json=req.input_json,
-            platform_run_id=req.platform_run_id,
+            group_id=gid, input_json=req.input_json, **_run_id(req),
         )
     except Exception as exc:
         logger.exception("[aneurysm] postprocess exception")

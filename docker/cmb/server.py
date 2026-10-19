@@ -194,8 +194,12 @@ def _run_postprocess(req: PredictRequest, start: float) -> PredictResponse:
            "--input_json", input_json]
     if req.group_id is not None:
         cmd.extend(["--group_id", str(req.group_id)])
-    if req.platform_run_id:
-        cmd.extend(["--platform_run_id", req.platform_run_id])
+    # Only when the request carried one, and read with getattr: an installed kit
+    # replaces this file, base_server.py and postprocess.py one by one, so one it
+    # could not replace keeps the old field set or the old arguments.
+    rid = getattr(req, "platform_run_id", "")
+    if rid:
+        cmd.extend(["--platform_run_id", rid])
     err = _run_step(
         "Postprocess", cmd, base_env, start,
         cwd=BRAIN_PARCELLATION_ROOT,
