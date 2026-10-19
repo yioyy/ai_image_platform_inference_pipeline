@@ -23,7 +23,7 @@ import numpy as np
 logger = logging.getLogger("cmb.postprocess")
 
 
-def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
+def _notify_platform_complete(rdx_json_path: str, model_name: str, platform_run_id: str = "") -> None:
     """POST inference completion to RAD backend (AI_APP_INFERENCE_COMPLETE).
 
     Mirrors inline pipeline_*_tensorflow.py upload_inference_complete so the
@@ -45,16 +45,18 @@ def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
         import requests
         # Backend schema InferenceSuccessRequest requires the literal `result: "success"`
         # field — without it the POST returns HTTP 400 and the case stays "running".
-        r = requests.post(
-            url,
-            json={
-                "studyInstanceUid": study_uid,
-                "modelName": model_name,
-                "result": "success",
-                "inferenceId": inference_id,
-            },
-            timeout=30,
-        )
+        body = {
+            "studyInstanceUid": study_uid,
+            "modelName": model_name,
+            "result": "success",
+            "inferenceId": inference_id,
+        }
+        # The platform's id for the send this run answers (RADAX-1032), as received;
+        # only when the request carried one -- the platform refuses a body with a
+        # field it does not know.
+        if platform_run_id:
+            body["platform_run_id"] = platform_run_id
+        r = requests.post(url, json=body, timeout=30)
         logger.info("[notify] %s -> %s (%d)", model_name, url, r.status_code)
     except Exception as exc:
         logger.warning("[notify] %s failed: %s", model_name, exc)
@@ -67,6 +69,7 @@ def cmb_postprocess(
     process_dir: str,
     input_json: str = "",
     group_id: int = None,
+    platform_run_id: str = "",
 ) -> bool:
     try:
         logger.info("[postprocess] %s start", study_id)
@@ -184,7 +187,7 @@ def cmb_postprocess(
         logger.info("RAD upload done -> %s", target_dir)
 
         # ── 6. Notify RAD backend (inference complete) ───────────────────
-        _notify_platform_complete(rdx_json_path, "cmb_model")
+        _notify_platform_complete(rdx_json_path, "cmb_model", platform_run_id)
 
         # ── 7. Followup — 未來實作 ────────────────────────────────────────
         if input_json:
@@ -208,5 +211,8 @@ if __name__ == "__main__":
     p.add_argument("--input_json", default="")
     p.add_argument("--group_id", type=int, default=None,
                    help="CP1c (AP-085): per-group cleanup target; None=use env fallback")
+    p.add_argument("--platform_run_id", default="",
+                   help="the platform's id for this send, echoed on the completion")
     a = p.parse_args()
-    sys.exit(0 if cmb_postprocess(a.study_id, a.output_dir, a.dicom_dir, a.process_dir, a.input_json, a.group_id) else 1)
+    sys.exit(0 if cmb_postprocess(a.study_id, a.output_dir, a.dicom_dir, a.process_dir, a.input_json, a.group_id,
+                                  a.platform_run_id) else 1)

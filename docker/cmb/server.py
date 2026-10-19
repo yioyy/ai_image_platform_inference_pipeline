@@ -194,6 +194,8 @@ def _run_postprocess(req: PredictRequest, start: float) -> PredictResponse:
            "--input_json", input_json]
     if req.group_id is not None:
         cmd.extend(["--group_id", str(req.group_id)])
+    if req.platform_run_id:
+        cmd.extend(["--platform_run_id", req.platform_run_id])
     err = _run_step(
         "Postprocess", cmd, base_env, start,
         cwd=BRAIN_PARCELLATION_ROOT,

@@ -235,7 +235,8 @@ def _run_preprocess(req: PredictRequest, start: float) -> PredictResponse:
 
     logger.info("[aneurysm] preprocess start")
     try:
-        ok = aneurysm_preprocess(req.study_id, mra_path, dicom_dir, process_dir)
+        ok = aneurysm_preprocess(req.study_id, mra_path, dicom_dir, process_dir,
+                                 platform_run_id=req.platform_run_id)
     except Exception as exc:
         logger.exception("[aneurysm] preprocess exception")
         return PredictResponse(status="error", elapsed_time=time.time() - start,
@@ -326,6 +327,7 @@ def _run_postprocess(req: PredictRequest, start: float) -> PredictResponse:
         ok = aneurysm_postprocess(
             req.study_id, process_dir, req.output_folder,
             group_id=gid, input_json=req.input_json,
+            platform_run_id=req.platform_run_id,
         )
     except Exception as exc:
         logger.exception("[aneurysm] postprocess exception")

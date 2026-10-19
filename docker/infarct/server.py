@@ -243,7 +243,8 @@ def _run_postprocess(req: PredictRequest, start: float) -> PredictResponse:
     process_dir = _process_dir(req.study_id)
     logger.info("[infarct] postprocess start")
     try:
-        ok = infarct_postprocess(req.study_id, process_dir, req.output_folder)
+        ok = infarct_postprocess(req.study_id, process_dir, req.output_folder,
+                                 platform_run_id=req.platform_run_id)
     except Exception as exc:
         logger.exception("[infarct] postprocess exception")
         return _err(start, f"Postprocess exception: {exc}")

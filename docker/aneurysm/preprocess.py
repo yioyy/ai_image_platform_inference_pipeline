@@ -70,6 +70,7 @@ def aneurysm_preprocess(
     mra_path: str,
     dicom_dir: str,
     process_dir: str,
+    platform_run_id: str = "",
 ) -> bool:
     try:
         logger.info("[preprocess] %s start", study_id)
@@ -99,7 +100,7 @@ def aneurysm_preprocess(
             from postprocess import _notify_platform_failed
 
             _notify_platform_failed(
-                _study_uid_from_dicom_dir(dicom_dir), "aneurysm_model", reason)
+                _study_uid_from_dicom_dir(dicom_dir), "aneurysm_model", reason, platform_run_id)
             return False
 
         # A rerun must not inherit the previous run's outputs: every later
