@@ -113,6 +113,10 @@ class PredictRequest(BaseModel):
     # CP1c (AP-085 step-multi-group-isolation): per-task group filter; None=Watcher legacy
     # (server.py fall back to module-level GROUP_ID env), int=retrigger 帶 --group-id 帶過來
     group_id: Optional[int] = None
+    # The platform's id for this send (RADAX-1032), passed on by bp_worker when the
+    # request carried one; echoed on every completion this run reports. Empty for a
+    # request without one (clinical, today): the completion then stays as it was.
+    platform_run_id: str = ""
 
 
 class PredictResponse(BaseModel):

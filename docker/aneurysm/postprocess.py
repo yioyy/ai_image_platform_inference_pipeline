@@ -34,7 +34,36 @@ from skimage.measure import regionprops_table
 logger = logging.getLogger("aneurysm.postprocess")
 
 
-def _notify_platform_failed(study_uid: str, model_name: str, reason: str) -> None:
+def _completion(study_uid: str, model_name: str, result: str, inference_id: str,
+                platform_run_id: str = "") -> dict:
+    """The body of /inference-complete. platform_run_id is the platform's id for
+    the send this run answers (RADAX-1032), sent back as received; it is added
+    only when the request carried one, because the platform refuses a body with
+    a field it does not know, and a completion without it is what it always was."""
+    body = {"studyInstanceUid": study_uid, "modelName": model_name,
+            "result": result, "inferenceId": inference_id}
+    if platform_run_id:
+        body["platform_run_id"] = platform_run_id
+    return body
+
+
+def _stamp_platform_run_id(json_path: str, platform_run_id: str) -> None:
+    """Record the platform's id in a delivered prediction.json, top level, before
+    the completion is sent. Nothing when the request carried none."""
+    if not platform_run_id:
+        return
+    import json as _json
+    with open(json_path, encoding="utf-8") as f:
+        data = _json.load(f)
+    data["platform_run_id"] = platform_run_id
+    tmp = json_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        _json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, json_path)
+
+
+def _notify_platform_failed(study_uid: str, model_name: str, reason: str,
+                            platform_run_id: str = "") -> None:
     """Tell the platform this run failed, so the study stops reading "running".
 
     The completion POST is the only thing that moves an AiInferenceRecord off
@@ -55,12 +84,7 @@ def _notify_platform_failed(study_uid: str, model_name: str, reason: str) -> Non
 
         r = requests.post(
             url,
-            json={
-                "studyInstanceUid": study_uid,
-                "modelName": model_name,
-                "result": "failed",
-                "inferenceId": str(uuid.uuid4()),
-            },
+            json=_completion(study_uid, model_name, "failed", str(uuid.uuid4()), platform_run_id),
             timeout=30,
         )
         logger.info("[notify] %s failed-report -> %s (%d): %s",
@@ -90,7 +114,7 @@ def _study_uid_from_mra(path_dcm: str) -> str:
     return ""
 
 
-def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
+def _notify_platform_complete(rdx_json_path: str, model_name: str, platform_run_id: str = "") -> None:
     """POST inference completion to RAD backend (AI_APP_INFERENCE_COMPLETE).
 
     Mirrors inline pipeline_*_tensorflow.py upload_inference_complete so the
@@ -116,12 +140,7 @@ def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
         # field — without it the POST returns HTTP 400 and the case stays "running".
         r = requests.post(
             url,
-            json={
-                "studyInstanceUid": study_uid,
-                "modelName": model_name,
-                "result": "success",
-                "inferenceId": inference_id,
-            },
+            json=_completion(study_uid, model_name, "success", inference_id, platform_run_id),
             timeout=30,
         )
         if r.ok:
@@ -134,12 +153,13 @@ def _notify_platform_complete(rdx_json_path: str, model_name: str) -> None:
                          model_name, url, r.status_code, r.text[:400])
             _notify_platform_failed(
                 study_uid, model_name,
-                "platform rejected the result: HTTP %d %s" % (r.status_code, r.text[:200]))
+                "platform rejected the result: HTTP %d %s" % (r.status_code, r.text[:200]),
+                platform_run_id)
     except Exception as exc:
         logger.error("[notify] %s failed: %s", model_name, exc)
         try:
             _notify_platform_failed(study_uid, model_name,
-                                    "completion POST failed: %s" % exc)
+                                    "completion POST failed: %s" % exc, platform_run_id)
         except Exception:
             logger.error("[notify] %s could not report the failure either", model_name)
 
@@ -169,6 +189,7 @@ def aneurysm_postprocess(
     output_dir: str,
     group_id: int = 56,
     input_json: str = "",
+    platform_run_id: str = "",
 ) -> bool:
     try:
         t0 = time.time()
@@ -205,7 +226,7 @@ def aneurysm_postprocess(
                       "sent as MRA_BRAIN is a 3D TOF volume." % ", ".join(missing_mip))
             logger.error("[postprocess] %s: %s", study_id, reason)
             _notify_platform_failed(_study_uid_from_mra(path_dcm),
-                                    "aneurysm_model", reason)
+                                    "aneurysm_model", reason, platform_run_id)
             return False
 
         pred_nii = nib.load(pred_path)
@@ -307,6 +328,7 @@ def aneurysm_postprocess(
         aneurysm_infer_dir = os.path.join(aneurysm_model_root, aneurysm_inference_id)
         os.makedirs(aneurysm_infer_dir, exist_ok=True)
         shutil.copy(aneurysm_json_file, os.path.join(aneurysm_infer_dir, "prediction.json"))
+        _stamp_platform_run_id(os.path.join(aneurysm_infer_dir, "prediction.json"), platform_run_id)
 
         # MRA_BRAIN DICOM-SEG
         for det in aneurysm_data.get("detections", []) or []:
@@ -356,6 +378,7 @@ def aneurysm_postprocess(
             vessel_infer_dir = os.path.join(vessel_model_root, vessel_inference_id)
             os.makedirs(vessel_infer_dir, exist_ok=True)
             shutil.copy(vessel_json_file, os.path.join(vessel_infer_dir, "prediction.json"))
+            _stamp_platform_run_id(os.path.join(vessel_infer_dir, "prediction.json"), platform_run_id)
             vessel_src = os.path.join(path_dicomseg_n, "MRA_BRAIN_Vessel_A1.dcm")
             try:
                 _vessel_det = (vessel_data.get("detections") or [{}])[0]
@@ -433,9 +456,10 @@ def aneurysm_postprocess(
         # after rdx upload — container path must mirror it so the platform
         # flips the case from "running" to "done". Backend schema accepts
         # both aneurysm_model and vessel_model.
-        _notify_platform_complete(aneurysm_json_file, "aneurysm_model")
+        _notify_platform_complete(aneurysm_json_file, "aneurysm_model", platform_run_id)
         if os.path.isfile(vessel_json_file):
-            _notify_platform_complete(vessel_json_file, "vessel_model")
+            # the same id as aneurysm's: one request, two results (RADAX-1152)
+            _notify_platform_complete(vessel_json_file, "vessel_model", platform_run_id)
 
         # ── 7. Followup — CP9 ────────────────────────────────────────────
         if input_json:

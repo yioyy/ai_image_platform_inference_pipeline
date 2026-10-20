@@ -797,7 +797,21 @@ def _write_excel(path_excel: str, study_id: str, lesions: List[Dict[str, Any]]) 
     return out_path
 
 
-def _notify_platform_failed(study_uid: str, model_name: str, reason: str) -> None:
+def _completion(study_uid: str, model_name: str, result: str, inference_id: str,
+                platform_run_id: str = "") -> dict:
+    """The body of /inference-complete. platform_run_id is the platform's id for
+    the send this run answers (RADAX-1032), sent back as received; it is added
+    only when the request carried one, because the platform refuses a body with
+    a field it does not know, and a completion without it is what it always was."""
+    body = {"studyInstanceUid": study_uid, "modelName": model_name,
+            "result": result, "inferenceId": inference_id}
+    if platform_run_id:
+        body["platform_run_id"] = platform_run_id
+    return body
+
+
+def _notify_platform_failed(study_uid: str, model_name: str, reason: str,
+                            platform_run_id: str = "") -> None:
     """Tell the platform this run failed, so its record stops saying "running".
 
     The completion POST is the only thing that moves an AiInferenceRecord off
@@ -820,12 +834,7 @@ def _notify_platform_failed(study_uid: str, model_name: str, reason: str) -> Non
 
         r = requests.post(
             url,
-            json={
-                "studyInstanceUid": study_uid,
-                "modelName": model_name,
-                "result": "failed",
-                "inferenceId": str(uuid.uuid4()),
-            },
+            json=_completion(study_uid, model_name, "failed", str(uuid.uuid4()), platform_run_id),
             timeout=30,
         )
         logger.info("[notify] %s failed-report -> %s (%d): %s",
@@ -835,7 +844,8 @@ def _notify_platform_failed(study_uid: str, model_name: str, reason: str) -> Non
                      model_name, exc, reason)
 
 
-def _notify_platform_complete(prediction_json_path: str, model_name: str) -> None:
+def _notify_platform_complete(prediction_json_path: str, model_name: str,
+                              platform_run_id: str = "") -> None:
     """POST inference completion to the RAD backend (AI_APP_INFERENCE_COMPLETE).
 
     Same shape as docker/aneurysm/postprocess.py. Best-effort: the bundle on
@@ -870,12 +880,7 @@ def _notify_platform_complete(prediction_json_path: str, model_name: str) -> Non
         # "running" forever on the worklist.
         r = requests.post(
             url,
-            json={
-                "studyInstanceUid": study_uid,
-                "modelName": model_name,
-                "result": "success",
-                "inferenceId": inference_id,
-            },
+            json=_completion(study_uid, model_name, "success", inference_id, platform_run_id),
             timeout=30,
         )
         if r.ok:
@@ -894,18 +899,20 @@ def _notify_platform_complete(prediction_json_path: str, model_name: str) -> Non
                          model_name, url, r.status_code, r.text[:400])
             _notify_platform_failed(
                 study_uid, model_name,
-                "platform rejected the result: HTTP %d %s" % (r.status_code, r.text[:200]))
+                "platform rejected the result: HTTP %d %s" % (r.status_code, r.text[:200]),
+                platform_run_id)
     except Exception as exc:
         logger.error("[notify] %s failed: %s", model_name, exc)
         try:
             _notify_platform_failed(study_uid, model_name,
-                                    "completion POST failed: %s" % exc)
+                                    "completion POST failed: %s" % exc, platform_run_id)
         except Exception:
             logger.error("[notify] %s could not report the failure either",
                          model_name)
 
 
-def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> bool:
+def infarct_postprocess(study_id: str, process_dir: str, output_folder: str,
+                        platform_run_id: str = "") -> bool:
     try:
         t0 = time.time()
         logger.info("[postprocess] %s start", study_id)
@@ -1050,7 +1057,7 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
                     "measurable ADC volume (%s) — failing the run instead of "
                     "delivering a prediction that cannot be measured",
                     study_id, len(unmeasurable), len(lesions), detail)
-                _notify_platform_failed(study_uid, MODEL_NAME, detail)
+                _notify_platform_failed(study_uid, MODEL_NAME, detail, platform_run_id)
                 return False
 
             # Before any of the delivery work, mirroring aneurysm's step 3. The
@@ -1148,6 +1155,10 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
                 ],
             }
 
+            # The platform's id for this send, top level (RADAX-1032), when the
+            # request carried one.
+            if platform_run_id:
+                payload["platform_run_id"] = platform_run_id
             prediction_path = os.path.join(staging_dir, "prediction.json")
             with open(prediction_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=4)
@@ -1205,7 +1216,7 @@ def infarct_postprocess(study_id: str, process_dir: str, output_folder: str) -> 
         # Only now. The bundle is in the tree the backend reads, so the case
         # flipping to "done" points at something a reader can open.
         _notify_platform_complete(
-            os.path.join(delivered_dir, "prediction.json"), MODEL_NAME)
+            os.path.join(delivered_dir, "prediction.json"), MODEL_NAME, platform_run_id)
 
         logger.info("[postprocess] %s done (%.0fs)", study_id, time.time() - t0)
         return True

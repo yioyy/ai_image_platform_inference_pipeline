@@ -239,11 +239,24 @@ def _run_inference(req: PredictRequest, start: float) -> PredictResponse:
     return PredictResponse(status="ok", elapsed_time=time.time() - start)
 
 
+def _run_id(req: PredictRequest) -> dict:
+    """platform_run_id as keyword arguments, and only when the request carried one.
+
+    An installed kit replaces this file, base_server.py and postprocess.py one by
+    one (inference_infarct/start.sh), so one it could not replace keeps the old
+    field set or the old signature. A request without the id (clinical) must
+    still run against that.
+    """
+    rid = getattr(req, "platform_run_id", "")
+    return {"platform_run_id": rid} if rid else {}
+
+
 def _run_postprocess(req: PredictRequest, start: float) -> PredictResponse:
     process_dir = _process_dir(req.study_id)
     logger.info("[infarct] postprocess start")
     try:
-        ok = infarct_postprocess(req.study_id, process_dir, req.output_folder)
+        ok = infarct_postprocess(req.study_id, process_dir, req.output_folder,
+                                 **_run_id(req))
     except Exception as exc:
         logger.exception("[infarct] postprocess exception")
         return _err(start, f"Postprocess exception: {exc}")
