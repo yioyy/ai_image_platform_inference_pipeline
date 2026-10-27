@@ -415,7 +415,21 @@ def _img_to_MIPdicom(dcm, img, tag, series, SE, angle, count, fixed_slice_thickn
         Modified dcm Dataset
     """
     y_i, x_i = img.shape
+    # The template keeps its transfer syntax; a compressed one (JPEG lossless,
+    # when gdcmconv was not there to decompress it) does not fit the raw pixels
+    # written here, and pydicom refuses to write the file. Its pixels came
+    # encapsulated, whatever the syntax is called (a private one too).
+    encapsulated = 'PixelData' in dcm and dcm['PixelData'].is_undefined_length
     dcm.PixelData = img.tobytes()
+    if encapsulated:
+        dcm.file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+        dcm.is_implicit_VR = False
+        dcm.is_little_endian = True
+        dcm['PixelData'].VR = 'OW'
+        dcm['PixelData'].is_undefined_length = False
+        for keyword in ('ExtendedOffsetTable', 'ExtendedOffsetTableLengths'):
+            if keyword in dcm:
+                delattr(dcm, keyword)
     dcm[0x08, 0x0008].value = ['DERIVED', 'SECONDARY', 'OTHER']
     dcm[0x08, 0x103E].value = tag
     dcm[0x20, 0x0011].value = SE
