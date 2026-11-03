@@ -202,10 +202,16 @@ def _keep_largest_cc(mask):
 # training distribution (雙和 train set has no neck coverage). Use
 # SynthSeg to determine actual brain bottom in z, discard lesions whose
 # lowest voxel sits below brain_z_min + margin.
+# The cut is the lower of SynthSeg's bottom + 5 and the Stage A brain mask's
+# bottom + 6, so a lesion goes only when both would drop it: a SynthSeg that
+# misses the lower brain (3 of the 519 SHH/FEMH test cases, its bottom 23-87
+# slices above the brain mask's) no longer cuts mid-brain. On those test sets
+# and 台大 it keeps the same aneurysms SynthSeg alone did (2026-11-03).
 # Env:
 #   ANEURYSM_SYNTHSEG_ENABLED=1        default 1 (0 to skip entirely)
 #   SYNTHSEG_URL=http://127.0.0.1:5005 same host network as inference_aneurysm
-#   ANEURYSM_BRAIN_Z_MARGIN=5          slices above brain bottom edge
+#   ANEURYSM_BRAIN_Z_MARGIN=5          slices above SynthSeg's brain bottom edge
+#   ANEURYSM_BRAIN_MASK_Z_MARGIN=6     slices above the brain mask's bottom edge
 def _call_synthseg(process_dir, study_id, url, timeout=300.0):
     import json as _json
     from urllib.request import Request, urlopen
@@ -243,50 +249,65 @@ def _resolve_si_axis(affine):
     raise RuntimeError("cannot resolve S/I axis from affine")
 
 
-def _apply_neck_filter(process_dir, synthseg_native_path, z_margin):
-    """Drop Pred.nii.gz lesions sitting at/below the SynthSeg-defined brain
-    bottom (+ z_margin slices). Orientation-aware: uses the affine to
+def _apply_neck_filter(process_dir, synthseg_native_path, z_margin,
+                       brain_mask_path, brain_mask_margin):
+    """Drop Pred.nii.gz lesions sitting at/below the brain bottom, cut at the
+    lower of SynthSeg's bottom + z_margin slices and the brain mask's bottom
+    + brain_mask_margin slices. Orientation-aware: uses the affine to
     determine which voxel axis is S/I and which end is inferior. Discards
-    lesions whose minimum coordinate along the inferior direction sits within
-    z_margin of the brain edge on that side.
+    lesions whose minimum coordinate along the inferior direction sits below
+    that cut.
     """
     path_nnunet = os.path.join(process_dir, "nnUNet")
     pred_path = os.path.join(path_nnunet, "Pred.nii.gz")
-    if not os.path.isfile(pred_path) or not os.path.isfile(synthseg_native_path):
+    if not all(os.path.isfile(p) for p in (pred_path, synthseg_native_path, brain_mask_path)):
         return {"dropped": [], "kept": [], "reason": "inputs missing"}
 
     pred_img = nib.load(pred_path)
     pred_arr = np.array(pred_img.dataobj)
     syn_img = nib.load(synthseg_native_path)
     syn_arr = np.asarray(syn_img.dataobj)
+    brain_img = nib.load(brain_mask_path)
+    brain_arr = np.asarray(brain_img.dataobj)
+    # Both masks are read on Pred's voxel grid: the indices are compared along
+    # Pred's S/I axis. A mask on another grid (same shape, flipped or shifted)
+    # would move the cut, so the filter stands down instead. On david all 319
+    # cases on disk (2026-11-03) had identical shapes and affines.
+    for name, img, arr in (("synthseg", syn_img, syn_arr), ("brain mask", brain_img, brain_arr)):
+        if arr.shape != pred_arr.shape or not np.allclose(img.affine, pred_img.affine, atol=1e-3):
+            return {"dropped": [], "kept": [],
+                    "reason": f"{name} grid {arr.shape} differs from Pred {pred_arr.shape}"}
 
-    # Resolve S/I axis. Trust pred affine (it should match synthseg since
-    # synthseg was run on the same MRA_BRAIN volume with same header).
+    # Resolve S/I axis from the pred affine (the masks share it, checked above).
     si_axis, si_sign = _resolve_si_axis(pred_img.affine)
 
-    # Reduce synthseg to a 1-D presence array along si_axis (True where any
+    # Reduce each mask to a 1-D presence array along si_axis (True where any
     # brain label present at that slice).
     other = tuple(a for a in (0, 1, 2) if a != si_axis)
-    syn_slice_has_brain = (syn_arr > 0).sum(axis=other) > 0
-    syn_idx = np.where(syn_slice_has_brain)[0]
+    syn_idx = np.where((syn_arr > 0).sum(axis=other) > 0)[0]
+    brain_idx = np.where((brain_arr > 0).sum(axis=other) > 0)[0]
     if len(syn_idx) == 0:
         return {"dropped": [], "kept": [], "reason": "synthseg empty"}
+    if len(brain_idx) == 0:
+        return {"dropped": [], "kept": [], "reason": "brain mask empty"}
 
-    margin = int(z_margin)
+    margin, mask_margin = int(z_margin), int(brain_mask_margin)
     if si_sign > 0:
         # voxel_axis+1 -> Superior. Inferior end = index 0 side.
-        # brain bottom (inferior extent) = min index of syn presence.
-        brain_edge = int(syn_idx.min())
-        cutoff = brain_edge + margin
+        # brain bottom (inferior extent) = min index of presence; the lower
+        # of the two cuts is the smaller index.
+        syn_edge, mask_edge = int(syn_idx.min()), int(brain_idx.min())
+        cutoff = min(syn_edge + margin, mask_edge + mask_margin)
         # discard rule: lesion has any voxel at index < cutoff
         def drop(lesion_idx_along_si):
             return int(lesion_idx_along_si.min()) < cutoff
         direction = "index0=inferior (voxel_axis+1=S)"
     else:
         # voxel_axis+1 -> Inferior. Inferior end = max index side.
-        # brain bottom (inferior extent) = max index of syn presence.
-        brain_edge = int(syn_idx.max())
-        cutoff = brain_edge - margin
+        # brain bottom (inferior extent) = max index of presence; the lower
+        # of the two cuts is the larger index.
+        syn_edge, mask_edge = int(syn_idx.max()), int(brain_idx.max())
+        cutoff = max(syn_edge - margin, mask_edge - mask_margin)
         # discard rule: lesion has any voxel at index > cutoff
         def drop(lesion_idx_along_si):
             return int(lesion_idx_along_si.max()) > cutoff
@@ -321,7 +342,7 @@ def _apply_neck_filter(process_dir, synthseg_native_path, z_margin):
         nib.save(out, pred_path)
 
     return {"dropped": dropped, "kept": kept, "renumbered": renumbered,
-            "brain_edge": brain_edge, "cutoff": cutoff,
+            "synthseg_edge": syn_edge, "brain_mask_edge": mask_edge, "cutoff": cutoff,
             "si_axis": si_axis, "direction": direction}
 
 
@@ -436,11 +457,12 @@ def aneurysm_inference(
         # --- Stage C.5: SynthSeg + neck filter ---
         # Cross-institution TOF cases (e.g. 台大 wide-FOV) with cervical
         # extension confuse the aneurysm model outside training distribution.
-        # Filter using SynthSeg-determined brain bottom.
+        # Filter at the lower of the SynthSeg and Stage A brain-mask bottoms.
         if os.environ.get("ANEURYSM_SYNTHSEG_ENABLED", "1") == "1":
             t_syn = time.time()
             _syn_url = os.environ.get("SYNTHSEG_URL", "http://127.0.0.1:5005")
             _z_margin = int(os.environ.get("ANEURYSM_BRAIN_Z_MARGIN", "5"))
+            _mask_margin = int(os.environ.get("ANEURYSM_BRAIN_MASK_Z_MARGIN", "6"))
             try:
                 _paths = _call_synthseg(process_dir,
                                         os.path.basename(process_dir),
@@ -450,17 +472,21 @@ def aneurysm_inference(
                     _dst = os.path.join(path_nnunet, "SynthSEG.nii.gz")
                     if not os.path.exists(_dst):
                         shutil.copy(_native, _dst)
-                    _stat = _apply_neck_filter(process_dir, _native, _z_margin)
+                    _stat = _apply_neck_filter(process_dir, _native, _z_margin,
+                                               os.path.join(path_nnunet, "brain_mask.nii.gz"),
+                                               _mask_margin)
                     logger.info(
-                        "[C.5] synthseg+neck-filter done (%.0fs) si_axis=%s dir=%s brain_edge=%s cutoff=%s dropped=%s kept=%s renumbered=%s",
+                        "[C.5] synthseg+neck-filter done (%.0fs) si_axis=%s dir=%s synthseg_edge=%s brain_mask_edge=%s cutoff=%s dropped=%s kept=%s renumbered=%s reason=%s",
                         time.time() - t_syn,
                         _stat.get("si_axis"),
                         _stat.get("direction"),
-                        _stat.get("brain_edge"),
+                        _stat.get("synthseg_edge"),
+                        _stat.get("brain_mask_edge"),
                         _stat.get("cutoff"),
                         _stat.get("dropped"),
                         _stat.get("kept"),
-                        _stat.get("renumbered"))
+                        _stat.get("renumbered"),
+                        _stat.get("reason"))
                 else:
                     logger.warning("[C.5] synthseg returned no native output; skip filter")
             except Exception as _exc:
