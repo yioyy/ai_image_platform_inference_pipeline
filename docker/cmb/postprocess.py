@@ -150,7 +150,7 @@ def cmb_postprocess(
         # Replaces ws2030 deliver_results (Laravel API). Mirrors inline
         # pipeline_cmb_tensorflow.py copy_to_ai_result_path: writes
         # ai-inference-result/<study_uid>/cmb_model/<infer_id>/
-        # {prediction.json, <series_uid>_<label>.dcm}.
+        # {prediction.json, <series_uid>_<label>.dcm, Pred_CMB.nii.gz, SynthSEG_CMB.nii.gz}.
         upload_dir = os.environ.get(
             "RADX_UPLOAD_DIR",
             os.environ.get("AI_INFERENCE_RESULT_PATH", os.path.join("/home", os.environ.get("WORKER_USER", "david"), "ai-inference-result")),
@@ -178,6 +178,45 @@ def cmb_postprocess(
                 continue
             label = os.path.basename(dcm_file).replace("Pred_CMB_", "").replace(".dcm", "")
             shutil.copy(dcm_file, os.path.join(target_dir, f"{series_uid}_{label}.dcm"))
+        # Native + anatomy NIfTI, beside prediction.json, as the aneurysm
+        # delivery does: the platform ingests them at callback time into
+        # AiPredictionNiftiArtifact / AiPredictionAnatomyArtifact, and the
+        # comparison with an earlier exam is built from them; without them both
+        # are recorded not_delivered. The anatomy is SynthSeg33 on the SWAN's
+        # own grid (the grid Pred_CMB.nii.gz is on), which main.py writes as
+        # synthseg_<process folder>_SWAN_original_synthseg33.nii.gz.
+        #
+        # ⚠️ ONE file of each: the platform stores none when it finds several
+        # Pred_*.nii.gz or SynthSEG_<model>.nii.gz. Named files, never a glob.
+        swan_synthseg33 = os.path.join(
+            process_dir,
+            f"synthseg_{os.path.basename(os.path.normpath(process_dir))}_SWAN_original_synthseg33.nii.gz",
+        )
+        for _src, _name in [
+            (pred_nii_out, "Pred_CMB.nii.gz"),
+            (swan_synthseg33, "SynthSEG_CMB.nii.gz"),
+        ]:
+            # Loud, but never fatal: the DICOM SEG delivery above is what the
+            # radiologist sees, and it has already succeeded by this point.
+            if not os.path.isfile(_src):
+                logger.error(
+                    "native/anatomy NIfTI missing for delivery: %s — the platform "
+                    "will record it not_delivered and no comparison pair can form",
+                    _src,
+                )
+                continue
+            # Copied under a name the platform does not match until it is whole,
+            # so a copy cut short leaves no half NIfTI for it to store.
+            _dest = os.path.join(target_dir, _name)
+            try:
+                shutil.copy(_src, _dest + ".part")
+                os.replace(_dest + ".part", _dest)
+            except OSError as exc:
+                logger.error("native/anatomy NIfTI not delivered: %s: %s", _src, exc)
+                try:
+                    os.unlink(_dest + ".part")
+                except OSError:
+                    pass
         # The previous run was imported when its callback returned (the
         # platform imports synchronously and runs are serialized), so its
         # folder is nobody's input any more.
