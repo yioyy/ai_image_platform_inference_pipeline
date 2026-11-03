@@ -135,6 +135,14 @@ def cmb_detect(
     result_orig = result_orig[:swan_arr.shape[0], :swan_arr.shape[1], :swan_arr.shape[2]]
     result_orig = result_orig[::-1, ::-1, :]  # LPS → RAS
 
+    # A lesion of one isotropic voxel can fall between the native voxels the
+    # zoom samples and leave nothing in Pred_CMB.nii.gz. Its entry then has no
+    # DICOM-SEG, and build/cmb.py pairs entries with SEGs in order, so every
+    # later lesion would be reported with the class, location, diameter and
+    # probability of the one before it. Keep the NIfTI and the JSON the same lesions.
+    result_orig, lesion_stats = _drop_lost_lesions(result_orig, lesion_stats)
+    n_kept = len(lesion_stats)
+
     os.makedirs(os.path.dirname(output_nii_path), exist_ok=True)
     nib.save(nib.Nifti1Image(result_orig.astype(np.int16), swan_nii.affine, swan_nii.header),
              output_nii_path)
@@ -387,6 +395,27 @@ def _filter_and_relabel(regions, tp_confs, labeled, target_spacing, seg_arr=None
         })
 
     return result_label, lesion_stats, len(indices)
+
+
+def _drop_lost_lesions(label_arr, lesion_stats):
+    """Keep the lesions that still have a voxel on the native grid, renumbered 1..N.
+
+    The CMB_prob order is kept and only the lost ones leave it, so the label
+    value, the JSON index and the A<n> of the SEG stay one number.
+    """
+    present = set(np.unique(label_arr).tolist()) - {0}
+    lost = [s for s in lesion_stats if s["index"] not in present]
+    if not lost:
+        return label_arr, lesion_stats
+    logger.info("Dropped %d lesion(s) with no voxel left on the native grid: %s", len(lost),
+                ", ".join(f"#{s['index']} {s['class']} prob {s['cmb_prob']} ({s['voxels']} iso voxels)"
+                          for s in lost))
+    kept = [dict(s) for s in lesion_stats if s["index"] in present]
+    lut = np.zeros(int(label_arr.max()) + 1, dtype=label_arr.dtype)
+    for new, s in enumerate(kept, 1):
+        lut[s["index"]] = new
+        s["index"] = new
+    return lut[label_arr], kept
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
