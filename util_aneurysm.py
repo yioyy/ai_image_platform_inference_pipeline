@@ -899,6 +899,25 @@ class AneurysmPipeline:
         new_nii = nib.nifti1.Nifti1Image(new_img, affine, header=header)
         return new_nii
 
+    # Two junctions where the overlap vote names the wrong vessel, as docker/aneurysm/postprocess.py
+    # _junction_rule (2026-11-06): an A1 call (5, 6) with A2/Acom (7) within 2 voxels is an Acom
+    # aneurysm -> 7; a PCA call (10, 11) touching both PCAs and the BA trunk (14) is the basilar tip -> 14.
+    @staticmethod
+    def junction_rule(val, label_one, vessel):
+        if val not in (5, 6, 10, 11):
+            return val
+        idx = np.argwhere(label_one)
+        lo = np.maximum(idx.min(0) - 3, 0)
+        hi = np.minimum(idx.max(0) + 4, label_one.shape)
+        sl = tuple(slice(a, b) for a, b in zip(lo, hi))
+        near = ndimage.binary_dilation(label_one[sl], structure=np.ones((3, 3, 3), bool), iterations=2)
+        touch = set(np.unique(vessel[sl][near]).tolist())
+        if val in (5, 6) and 7 in touch:
+            return 7
+        if val in (10, 11) and {10, 11, 14} <= touch:
+            return 14
+        return val
+
     def make_aneurysm_vessel_location_16labels_pred(self):
         label_nii = nib.load(os.path.join(self.path_nii, 'Pred.nii.gz'))
         label = np.array(label_nii.dataobj)
@@ -917,7 +936,7 @@ class AneurysmPipeline:
                 non_zero_elements = ane_overlap[ane_overlap != 0]
                 counter = Counter(non_zero_elements)
                 most_common_value, _ = counter.most_common(1)[0]
-                new_label[label_one] = int(most_common_value)
+                new_label[label_one] = int(self.junction_rule(most_common_value, label_one, vessel))
             else:
                 dilation_one = label_one.copy()
                 while np.sum(dilation_one * vessel) == 0:
@@ -926,7 +945,7 @@ class AneurysmPipeline:
                 non_zero_elements = ane_overlap[ane_overlap != 0]
                 counter = Counter(non_zero_elements)
                 most_common_value, _ = counter.most_common(1)[0]
-                new_label[label_one] = int(most_common_value)
+                new_label[label_one] = int(self.junction_rule(most_common_value, label_one, vessel))
                 print(f'失敗慘了 {i + 1} 是沒有在血管mask上, 但最後分配給: {int(most_common_value)}')
 
         new_label_back = self.data_translate_back(new_label, label_nii).astype(int)
