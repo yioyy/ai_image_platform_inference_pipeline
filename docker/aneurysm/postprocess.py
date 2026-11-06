@@ -183,6 +183,29 @@ def _decode_vessel_location(val):
     else:               return '', ''
 
 
+# Two junctions where the overlap vote names the wrong vessel: the vessel model paints the sac
+# of a junction aneurysm with one of its vessels, and the label lists name it after the junction.
+#  - an A1 call (5, 6) with the A2/Acom label (7) within 2 voxels is an Acom aneurysm -> ACA;
+#  - a PCA call (10, 11) touching both PCAs and the BA trunk (14) sits on the basilar tip -> BA.
+# Measured against the text locations (2026-11-06): 雙和 + 亞東 665 aneurysms 82.7% -> 85.9%,
+# SHH validation 259 aneurysms 75.7% -> 79.9%.
+def _junction_rule(val, mask, v16_arr):
+    if val not in (5, 6, 10, 11):
+        return val
+    from scipy.ndimage import binary_dilation
+    idx = np.argwhere(mask)
+    lo = np.maximum(idx.min(0) - 3, 0)
+    hi = np.minimum(idx.max(0) + 4, mask.shape)
+    sl = tuple(slice(a, b) for a, b in zip(lo, hi))
+    near = binary_dilation(mask[sl], structure=np.ones((3, 3, 3), bool), iterations=2)
+    touch = set(np.unique(v16_arr[sl][near]).tolist())
+    if val in (5, 6) and 7 in touch:
+        return 7
+    if val in (10, 11) and {10, 11, 14} <= touch:
+        return 14
+    return val
+
+
 def aneurysm_postprocess(
     study_id: str,
     process_dir: str,
@@ -552,7 +575,8 @@ def _generate_excel(pred_arr, pred_nii, process_dir, path_nnunet, study_id, v16_
                 if len(non_zero) > 0:
                     counter = Counter(non_zero.astype(int).tolist())
                     most_common_val = counter.most_common(1)[0][0]
-                    location, sub_location = _decode_vessel_location(most_common_val)
+                    location, sub_location = _decode_vessel_location(
+                        _junction_rule(most_common_val, mask, v16_arr))
                 else:
                     # Dilation fallback (old pipeline: dilate until hitting vessel)
                     dilated = mask.copy()
@@ -563,7 +587,8 @@ def _generate_excel(pred_arr, pred_nii, process_dir, path_nnunet, study_id, v16_
                         if len(non_zero) > 0:
                             counter = Counter(non_zero.astype(int).tolist())
                             most_common_val = counter.most_common(1)[0][0]
-                            location, sub_location = _decode_vessel_location(most_common_val)
+                            location, sub_location = _decode_vessel_location(
+                                _junction_rule(most_common_val, mask, v16_arr))
                             break
 
             row[f"{idx}_size"] = size_mm
