@@ -202,16 +202,31 @@ def _keep_largest_cc(mask):
 # training distribution (雙和 train set has no neck coverage). Use
 # SynthSeg to determine actual brain bottom in z, discard lesions whose
 # lowest voxel sits below brain_z_min + margin.
-# The cut is the lower of SynthSeg's bottom + 5 and the Stage A brain mask's
-# bottom + 6, so a lesion goes only when both would drop it: a SynthSeg that
-# misses the lower brain (3 of the 519 SHH/FEMH test cases, its bottom 23-87
-# slices above the brain mask's) no longer cuts mid-brain. On those test sets
-# and 台大 it keeps the same aneurysms SynthSeg alone did (2026-11-03).
+# Only SynthSeg's bottom is used, never its extent: SynthSeg is not trained on
+# MRA and its range can be off (it crops the volume to the central 192 mm, so a
+# long scan loses the top of the head; a thin slab can come out nearly empty).
+# Its bottom is trusted when the lowest 10 mm it labels is brainstem/cerebellum
+# (labels 16, 7, 8, 46, 47 make up at least half of the non-CSF voxels there,
+# at least 0.2 mL of them, on at least 15 % of those slices), the cerebellum
+# begins within 20 mm above it, and it is not at the edge of SynthSeg's 192 mm
+# crop (_synthseg_bottom_trusted). Then the cut is SynthSeg's bottom + 5. Otherwise it is the lower of SynthSeg's bottom + 5
+# and the Stage A brain mask's bottom + 6, as from 2026-11-03, so a SynthSeg
+# that misses the lower brain does not cut mid-brain. In 2629 mutp and 519
+# SHH/FEMH cases, wherever brainstem/cerebellum made up half of that band they
+# came to 0.25 mL or more on 18 % of its slices or more; the 5 SynthSegs that
+# missed the lower brain had at most 0.2 mL there.
+# The brain mask alone is no bottom: on scans reaching the neck it takes in the
+# pharynx and neck soft tissue as one piece with the brain, down to the scan's
+# bottom slice (6 % of the 2631 mutp train/val cases). On those 2631 cases the
+# trusted-SynthSeg rule removed 34 reported false positives against 18 for the
+# lower of the two, losing the same single aneurysm (2026-11-09).
 # Env:
 #   ANEURYSM_SYNTHSEG_ENABLED=1        default 1 (0 to skip entirely)
 #   SYNTHSEG_URL=http://127.0.0.1:5005 same host network as inference_aneurysm
 #   ANEURYSM_BRAIN_Z_MARGIN=5          slices above SynthSeg's brain bottom edge
 #   ANEURYSM_BRAIN_MASK_Z_MARGIN=6     slices above the brain mask's bottom edge
+#   ANEURYSM_NECK_RULE=trusted         "lower" always takes the lower of the two
+#                                      cuts (the 2026-11-03 rule)
 def _call_synthseg(process_dir, study_id, url, timeout=300.0):
     import json as _json
     from urllib.request import Request, urlopen
@@ -249,14 +264,58 @@ def _resolve_si_axis(affine):
     raise RuntimeError("cannot resolve S/I axis from affine")
 
 
+_SYNTHSEG_BRAINSTEM_CEREBELLUM = (16, 7, 8, 46, 47)
+_SYNTHSEG_CEREBELLUM = (7, 8, 46, 47)
+_SYNTHSEG_CSF = 24
+
+
+def _synthseg_bottom_trusted(syn_arr, si_axis, si_sign, syn_edge, zooms):
+    """Whether SynthSeg's bottom is the brain's. All of:
+    - in the lowest 10 mm it labels, brainstem/cerebellum make up at least half
+      of the non-CSF voxels, at least 0.2 mL of them, present on at least 15 %
+      of those slices (a nearly empty SynthSeg cannot pass on a few voxels);
+    - cerebellum begins within 20 mm above that bottom (label 16 alone may be a
+      pons/midbrain whose medulla and cerebellum SynthSeg missed; at the real
+      bottom the cerebellum was within 14.4 mm in all 3141 trusted cases);
+    - that bottom is not at the edge of SynthSeg's crop (it segments only the
+      central 192 mm along each axis; a bottom within 10 mm of the crop's lower
+      edge may be the crop, not the brain).
+    Returns (trusted, fraction, mL, fraction of slices, cerebellum distance mm
+    or None)."""
+    n = syn_arr.shape[si_axis]
+    dz = float(zooms[si_axis])
+    k = max(1, int(round(10.0 / dz)))
+    band = slice(syn_edge, min(n, syn_edge + k)) if si_sign > 0 else slice(max(0, syn_edge - k + 1), syn_edge + 1)
+    sl = [slice(None)] * 3
+    sl[si_axis] = band
+    low = np.asarray(syn_arr[tuple(sl)])
+    bscb = np.isin(low, _SYNTHSEG_BRAINSTEM_CEREBELLUM)
+    tissue = int(((low > 0) & (low != _SYNTHSEG_CSF)).sum())
+    frac = float(bscb.sum()) / tissue if tissue else 0.0
+    ml = float(bscb.sum()) * float(np.prod(zooms[:3])) / 1000.0
+    other = tuple(a for a in (0, 1, 2) if a != si_axis)
+    slice_frac = float(bscb.any(axis=other).mean())
+    cb_idx = np.where(np.isin(syn_arr, _SYNTHSEG_CEREBELLUM).any(axis=other))[0]
+    cb_mm = None
+    if len(cb_idx):
+        cb_mm = (int(cb_idx.min()) - syn_edge) * dz if si_sign > 0 else (syn_edge - int(cb_idx.max())) * dz
+    length = n * dz
+    from_scan_bottom = (syn_edge if si_sign > 0 else n - 1 - syn_edge) * dz
+    crop_ok = length <= 192.0 or from_scan_bottom - (length / 2.0 - 96.0) >= 10.0
+    trusted = (frac >= 0.5 and ml >= 0.2 and slice_frac >= 0.15
+               and cb_mm is not None and cb_mm <= 20.0 and crop_ok)
+    return trusted, frac, ml, slice_frac, cb_mm
+
+
 def _apply_neck_filter(process_dir, synthseg_native_path, z_margin,
-                       brain_mask_path, brain_mask_margin):
-    """Drop Pred.nii.gz lesions sitting at/below the brain bottom, cut at the
-    lower of SynthSeg's bottom + z_margin slices and the brain mask's bottom
-    + brain_mask_margin slices. Orientation-aware: uses the affine to
-    determine which voxel axis is S/I and which end is inferior. Discards
-    lesions whose minimum coordinate along the inferior direction sits below
-    that cut.
+                       brain_mask_path, brain_mask_margin, rule="trusted"):
+    """Drop Pred.nii.gz lesions sitting at/below the brain bottom. The cut is
+    SynthSeg's bottom + z_margin slices when that bottom is trusted
+    (_synthseg_bottom_trusted), else the lower of it and the brain mask's
+    bottom + brain_mask_margin slices; rule="lower" always takes the lower
+    one. Orientation-aware: uses the affine to determine which voxel axis is
+    S/I and which end is inferior. Discards lesions whose minimum coordinate
+    along the inferior direction sits below that cut.
     """
     path_nnunet = os.path.join(process_dir, "nnUNet")
     pred_path = os.path.join(path_nnunet, "Pred.nii.gz")
@@ -292,12 +351,16 @@ def _apply_neck_filter(process_dir, synthseg_native_path, z_margin,
         return {"dropped": [], "kept": [], "reason": "brain mask empty"}
 
     margin, mask_margin = int(z_margin), int(brain_mask_margin)
+    syn_edge = int(syn_idx.min()) if si_sign > 0 else int(syn_idx.max())
+    trusted, bottom_frac, bottom_ml, bottom_slices, cerebellum_mm = _synthseg_bottom_trusted(
+        syn_arr, si_axis, si_sign, syn_edge, pred_img.header.get_zooms()[:3])
+    use_synthseg = trusted and rule != "lower"
     if si_sign > 0:
         # voxel_axis+1 -> Superior. Inferior end = index 0 side.
         # brain bottom (inferior extent) = min index of presence; the lower
         # of the two cuts is the smaller index.
-        syn_edge, mask_edge = int(syn_idx.min()), int(brain_idx.min())
-        cutoff = min(syn_edge + margin, mask_edge + mask_margin)
+        mask_edge = int(brain_idx.min())
+        cutoff = syn_edge + margin if use_synthseg else min(syn_edge + margin, mask_edge + mask_margin)
         # discard rule: lesion has any voxel at index < cutoff
         def drop(lesion_idx_along_si):
             return int(lesion_idx_along_si.min()) < cutoff
@@ -306,8 +369,8 @@ def _apply_neck_filter(process_dir, synthseg_native_path, z_margin,
         # voxel_axis+1 -> Inferior. Inferior end = max index side.
         # brain bottom (inferior extent) = max index of presence; the lower
         # of the two cuts is the larger index.
-        syn_edge, mask_edge = int(syn_idx.max()), int(brain_idx.max())
-        cutoff = max(syn_edge - margin, mask_edge - mask_margin)
+        mask_edge = int(brain_idx.max())
+        cutoff = syn_edge - margin if use_synthseg else max(syn_edge - margin, mask_edge - mask_margin)
         # discard rule: lesion has any voxel at index > cutoff
         def drop(lesion_idx_along_si):
             return int(lesion_idx_along_si.max()) > cutoff
@@ -343,6 +406,10 @@ def _apply_neck_filter(process_dir, synthseg_native_path, z_margin,
 
     return {"dropped": dropped, "kept": kept, "renumbered": renumbered,
             "synthseg_edge": syn_edge, "brain_mask_edge": mask_edge, "cutoff": cutoff,
+            "synthseg_trusted": trusted, "bottom_brainstem_cerebellum": round(bottom_frac, 3),
+            "bottom_brainstem_cerebellum_ml": round(bottom_ml, 3), "bottom_brainstem_cerebellum_slices": round(bottom_slices, 3),
+            "cerebellum_above_bottom_mm": None if cerebellum_mm is None else round(cerebellum_mm, 1),
+            "cut_by": "synthseg" if use_synthseg else "lower",
             "si_axis": si_axis, "direction": direction}
 
 
@@ -457,12 +524,14 @@ def aneurysm_inference(
         # --- Stage C.5: SynthSeg + neck filter ---
         # Cross-institution TOF cases (e.g. 台大 wide-FOV) with cervical
         # extension confuse the aneurysm model outside training distribution.
-        # Filter at the lower of the SynthSeg and Stage A brain-mask bottoms.
+        # Filter at SynthSeg's bottom when it is trusted, else at the lower of
+        # the SynthSeg and Stage A brain-mask bottoms.
         if os.environ.get("ANEURYSM_SYNTHSEG_ENABLED", "1") == "1":
             t_syn = time.time()
             _syn_url = os.environ.get("SYNTHSEG_URL", "http://127.0.0.1:5005")
             _z_margin = int(os.environ.get("ANEURYSM_BRAIN_Z_MARGIN", "5"))
             _mask_margin = int(os.environ.get("ANEURYSM_BRAIN_MASK_Z_MARGIN", "6"))
+            _neck_rule = os.environ.get("ANEURYSM_NECK_RULE", "trusted")
             try:
                 _paths = _call_synthseg(process_dir,
                                         os.path.basename(process_dir),
@@ -474,14 +543,20 @@ def aneurysm_inference(
                         shutil.copy(_native, _dst)
                     _stat = _apply_neck_filter(process_dir, _native, _z_margin,
                                                os.path.join(path_nnunet, "brain_mask.nii.gz"),
-                                               _mask_margin)
+                                               _mask_margin, rule=_neck_rule)
                     logger.info(
-                        "[C.5] synthseg+neck-filter done (%.0fs) si_axis=%s dir=%s synthseg_edge=%s brain_mask_edge=%s cutoff=%s dropped=%s kept=%s renumbered=%s reason=%s",
+                        "[C.5] synthseg+neck-filter done (%.0fs) si_axis=%s dir=%s synthseg_edge=%s brain_mask_edge=%s synthseg_trusted=%s bottom_bs_cb=%s/%smL/%s cerebellum_mm=%s cut_by=%s cutoff=%s dropped=%s kept=%s renumbered=%s reason=%s",
                         time.time() - t_syn,
                         _stat.get("si_axis"),
                         _stat.get("direction"),
                         _stat.get("synthseg_edge"),
                         _stat.get("brain_mask_edge"),
+                        _stat.get("synthseg_trusted"),
+                        _stat.get("bottom_brainstem_cerebellum"),
+                        _stat.get("bottom_brainstem_cerebellum_ml"),
+                        _stat.get("bottom_brainstem_cerebellum_slices"),
+                        _stat.get("cerebellum_above_bottom_mm"),
+                        _stat.get("cut_by"),
                         _stat.get("cutoff"),
                         _stat.get("dropped"),
                         _stat.get("kept"),
